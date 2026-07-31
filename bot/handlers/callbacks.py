@@ -421,3 +421,93 @@ async def cb_favplay(query: CallbackQuery) -> None:
     track["requester"] = query.from_user.full_name if query.from_user else "Unknown"
     await stream_manager.play(chat_id, track)
     await cb_panel(query)
+
+
+@router.callback_query(F.data == "ctrl:video")
+async def cb_video_mode(query: CallbackQuery) -> None:
+    from bot.services.chat_settings import chat_settings
+    from bot.utils.formatters import bq, bold
+
+    chat_id = query.message.chat.id
+    enabled = await chat_settings.toggle(chat_id, "default_video")
+    await query.answer(f"🎬 Video mode: {'ON' if enabled else 'OFF'}")
+    await query.message.answer(
+        f"🎬 {bold('Video Mode')}\n\n"
+        f"{bq('Default video mode is now ' + ('enabled' if enabled else 'disabled') + '. Use /vplay for video streams.')}",
+        parse_mode="HTML",
+    )
+
+
+@router.callback_query(F.data == "ctrl:live")
+async def cb_live_mode(query: CallbackQuery) -> None:
+    from bot.utils.formatters import bq, bold, italic
+
+    await query.message.answer(
+        f"📡 {bold('Live Stream')}\n\n"
+        f"{bq('Send a live URL to stream.')}\n\n"
+        f"{italic('Usage: /vstream <m3u8 or YouTube Live URL>')}",
+        parse_mode="HTML",
+    )
+    await query.answer("Use /vstream <url>")
+
+
+@router.callback_query(F.data == "ctrl:more_suggest")
+async def cb_more_suggest(query: CallbackQuery) -> None:
+    from bot.services.music import get_suggestions
+    from bot.keyboards.inline import suggestions_kb
+    from bot.utils.formatters import suggestions_card
+    from bot.utils.helpers import cache_suggestions
+
+    current = await queue_manager.get_current(query.message.chat.id)
+    seed = current["title"] if current else "popular music"
+    suggestions = await get_suggestions(seed, limit=12)
+    cache_suggestions(suggestions)
+    await query.message.edit_text(
+        suggestions_card(seed, suggestions),
+        parse_mode="HTML",
+        reply_markup=suggestions_kb(suggestions),
+    )
+    await query.answer("🔄 Refreshed")
+
+
+@router.callback_query(F.data == "settings:volume")
+async def cb_settings_volume(query: CallbackQuery) -> None:
+    vol = await queue_manager.get_volume(query.message.chat.id)
+    await query.message.answer(
+        f"🔊 <b>Volume:</b> <code>{vol}%</code>\n\nUse /volume 1-200 or the panel buttons.",
+        parse_mode="HTML",
+    )
+    await query.answer()
+
+
+@router.callback_query(F.data == "settings:loop")
+async def cb_settings_loop(query: CallbackQuery) -> None:
+    mode = await queue_manager.toggle_loop(query.message.chat.id)
+    await query.answer(f"🔁 Loop: {mode.value}")
+    await query.message.answer(f"🔁 Loop mode: <b>{mode.value.title()}</b>", parse_mode="HTML")
+
+
+@router.callback_query(F.data == "settings:autoleave")
+async def cb_settings_autoleave(query: CallbackQuery) -> None:
+    from bot.config import config
+    from bot.services.chat_settings import chat_settings
+
+    enabled = await chat_settings.toggle(query.message.chat.id, "autoleave_enabled")
+    await query.answer(f"Auto-leave: {'ON' if enabled else 'OFF'}")
+    await query.message.answer(
+        f"📡 Auto-leave: <b>{'enabled' if enabled else 'disabled'}</b> "
+        f"(idle: {config.auto_leave_idle}s)",
+        parse_mode="HTML",
+    )
+
+
+@router.callback_query(F.data == "settings:video")
+async def cb_settings_video(query: CallbackQuery) -> None:
+    from bot.services.chat_settings import chat_settings
+
+    enabled = await chat_settings.toggle(query.message.chat.id, "default_video")
+    await query.answer(f"Default video: {'ON' if enabled else 'OFF'}")
+    await query.message.answer(
+        f"🎬 Default video: <b>{'enabled' if enabled else 'disabled'}</b>",
+        parse_mode="HTML",
+    )

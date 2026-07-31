@@ -54,6 +54,10 @@ A premium Telegram music & video bot with voice chat streaming, live streams, ly
 | Inline search | `@bot <query>` |
 | Admin commands | `/sudo` `/astop` `/broadcast` |
 | Auto-leave idle VC | Configurable via `.env` |
+| Playback speed | `/speed 0.5–2.0` |
+| Track info | `/info` |
+| Supported sources | `/source` |
+| Docker deploy | `docker compose up -d` |
 
 ## Requirements
 
@@ -101,6 +105,12 @@ Log in with your **assistant account** (not the bot). Copy the output into `SESS
 
 ```bash
 python main.py
+```
+
+Or with Docker:
+
+```bash
+docker compose up -d
 ```
 
 ### 5. Use in a group
