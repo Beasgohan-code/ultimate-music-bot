@@ -138,4 +138,3 @@ ultimate-music-bot/
 
 ---
 
-Built with [BrainDaemon](https://braindaemon.com)
