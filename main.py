@@ -14,7 +14,9 @@ from aiogram.types import BotCommand
 
 from assistant.client import create_assistant
 from bot.config import config
-from bot.handlers import callbacks, extras, play, start
+from bot.handlers import admin, advanced, callbacks, dashboard, extras, inline_mode, play, start
+from bot.middlewares.stats import StatsMiddleware
+from bot.services.autoleave import auto_leave
 from bot.services.stream import stream_manager
 
 logging.basicConfig(
@@ -31,9 +33,16 @@ BOT_COMMANDS = [
     BotCommand(command="cplay", description="Channel/group play"),
     BotCommand(command="vplay", description="Stream video (MKV/MP4)"),
     BotCommand(command="vstream", description="Live stream (m3u8)"),
+    BotCommand(command="playlist", description="Load YouTube playlist"),
+    BotCommand(command="radio", description="Internet radio stations"),
+    BotCommand(command="mood", description="Mood-based playlists"),
     BotCommand(command="search", description="Interactive search"),
     BotCommand(command="lyrics", description="Get song lyrics"),
     BotCommand(command="suggest", description="Song suggestions"),
+    BotCommand(command="fav", description="Save to favorites"),
+    BotCommand(command="favs", description="View favorites"),
+    BotCommand(command="download", description="Download as MP3"),
+    BotCommand(command="os", description="Premium OS dashboard"),
     BotCommand(command="panel", description="Control panel"),
     BotCommand(command="queue", description="View queue"),
     BotCommand(command="help", description="All commands"),
@@ -56,21 +65,28 @@ async def main() -> None:
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
     dp = Dispatcher(storage=MemoryStorage())
+    dp.update.middleware(StatsMiddleware())
 
     dp.include_router(start.router)
     dp.include_router(play.router)
+    dp.include_router(advanced.router)
     dp.include_router(extras.router)
+    dp.include_router(dashboard.router)
+    dp.include_router(admin.router)
+    dp.include_router(inline_mode.router)
     dp.include_router(callbacks.router)
 
     logger.info("Starting assistant userbot…")
     await assistant.start()
     await calls.start()
+    await auto_leave.start()
     await bot.set_my_commands(BOT_COMMANDS)
 
     logger.info("Ultimate Music Bot is live!")
     try:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
+        await auto_leave.stop()
         await calls.stop()
         await assistant.stop()
         await bot.session.close()

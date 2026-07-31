@@ -174,6 +174,50 @@ async def get_suggestions(seed_query: str, limit: int = 8) -> list[dict[str, Any
     return results
 
 
+async def get_playlist(url: str, requester: str = "", limit: int = 50) -> list[dict[str, Any]]:
+    """Extract tracks from a YouTube/Spotify playlist URL."""
+    opts = {
+        **YDL_OPTS_BASE,
+        "extract_flat": True,
+        "skip_download": True,
+        "noplaylist": False,
+        "playlistend": limit,
+    }
+    info = await _run_ytdl(opts, url)
+    if not info:
+        return []
+
+    entries = info.get("entries", []) if isinstance(info, dict) else []
+    tracks = []
+    for entry in entries:
+        if not entry:
+            continue
+        track = _normalize_entry(entry, requester)
+        if not track.get("url") and track.get("id"):
+            track["url"] = f"https://youtube.com/watch?v={track['id']}"
+        tracks.append(track)
+    return tracks
+
+
+MOOD_QUERIES: dict[str, str] = {
+    "chill": "chill lofi beats to relax",
+    "party": "party dance hits 2024",
+    "workout": "workout gym motivation music",
+    "sad": "sad emotional songs playlist",
+    "happy": "happy upbeat feel good songs",
+    "focus": "focus concentration study music",
+    "sleep": "sleep relaxing ambient music",
+    "romantic": "romantic love songs playlist",
+    "gaming": "gaming epic music mix",
+    "retro": "80s 90s retro hits playlist",
+}
+
+
+async def get_mood_tracks(mood: str, limit: int = 10) -> list[dict[str, Any]]:
+    query = MOOD_QUERIES.get(mood.lower(), f"{mood} music playlist")
+    return await search_youtube(query, limit)
+
+
 async def resolve_telegram_file(file_path: str, title: str = "Uploaded File") -> dict[str, Any]:
     """Build a track dict from a local Telegram-downloaded file."""
     return {

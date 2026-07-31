@@ -113,3 +113,63 @@ async def cb_menu_suggest(query: CallbackQuery) -> None:
         parse_mode="HTML",
     )
     await query.answer("Use /suggest <query>")
+
+
+@router.callback_query(F.data == "menu:radio")
+async def cb_menu_radio(query: CallbackQuery) -> None:
+    from bot.keyboards.inline import radio_kb
+    from bot.utils.formatters import radio_card
+
+    await query.message.edit_text(radio_card(), parse_mode="HTML", reply_markup=radio_kb())
+    await query.answer()
+
+
+@router.callback_query(F.data == "menu:mood")
+async def cb_menu_mood(query: CallbackQuery) -> None:
+    from bot.keyboards.inline import mood_kb
+    from bot.utils.formatters import mood_card
+
+    await query.message.edit_text(mood_card(), parse_mode="HTML", reply_markup=mood_kb())
+    await query.answer()
+
+
+@router.callback_query(F.data == "menu:favs")
+async def cb_menu_favs(query: CallbackQuery) -> None:
+    from bot.keyboards.inline import favorites_kb
+    from bot.services.favorites import favorites_store
+    from bot.utils.formatters import favorites_card
+
+    user_id = query.from_user.id if query.from_user else 0
+    favs = await favorites_store.list(user_id)
+    await query.message.edit_text(
+        favorites_card(favs),
+        parse_mode="HTML",
+        reply_markup=favorites_kb(favs) if favs else None,
+    )
+    await query.answer()
+
+
+@router.callback_query(F.data == "menu:os")
+async def cb_menu_os(query: CallbackQuery) -> None:
+    from bot.handlers.dashboard import cmd_os
+
+    class _Msg:
+        def __init__(self, q):
+            self.chat = q.message.chat
+            self.from_user = q.from_user
+            self.answer = q.message.answer
+
+    await cmd_os(_Msg(query))
+    await query.answer()
+
+
+@router.callback_query(F.data == "menu:stats")
+async def cb_menu_stats(query: CallbackQuery) -> None:
+    from bot.services.history import history_tracker
+    from bot.services.stats import bot_stats
+    from bot.utils.formatters import stats_card
+
+    stats = await bot_stats.summary()
+    recent = await history_tracker.get_global_history(5)
+    await query.message.answer(stats_card(stats, recent), parse_mode="HTML")
+    await query.answer()

@@ -73,12 +73,15 @@ def format_track(
 def welcome_message(bot_name: str = "Ultimate Music Bot") -> str:
     return (
         f"✨ {bold(bot_name)}\n\n"
-        f"{bq('Premium Telegram music & video streaming — voice chats, live streams, lyrics, and smart suggestions.')}\n\n"
-        f"🎧 {bold('Audio')} — YouTube, search, URLs, files\n"
+        f"{bq('Premium Telegram music & video streaming — voice chats, live streams, lyrics, radio, moods, and smart suggestions.')}\n\n"
+        f"🎧 {bold('Audio')} — YouTube, Spotify, SoundCloud, files\n"
         f"🎬 {bold('Video')} — MKV, MP4, live streams\n"
-        f"📻 {bold('Live')} — m3u8, YouTube Live\n"
+        f"📻 {bold('Radio')} — 10+ built-in stations\n"
+        f"🎭 {bold('Moods')} — Chill, party, workout & more\n"
         f"📝 {bold('Lyrics')} — instant song lyrics\n"
-        f"💡 {bold('Suggestions')} — AI-powered picks\n\n"
+        f"💡 {bold('Suggestions')} — smart picks\n"
+        f"⭐ {bold('Favorites')} — save tracks you love\n"
+        f"🖥 {bold('OS Dashboard')} — /os for full control\n\n"
         f"{italic('Add me to a group, promote me, then use /play or tap the buttons below.')}"
     )
 
@@ -173,15 +176,117 @@ def help_card() -> str:
         f"/cplay — Channel/group play\n"
         f"/vplay — Stream video (MKV/MP4)\n"
         f"/vstream — Live stream (m3u8/YouTube Live)\n"
-        f"/search — Interactive search picker\n\n"
+        f"/playlist — Load YouTube playlist\n"
+        f"/playnow — Force play immediately\n"
+        f"/playnext — Add to front of queue\n"
+        f"/search — Interactive search picker\n"
+        f"/radio — Internet radio stations\n"
+        f"/mood — Mood-based playlists\n\n"
         f"{bq('Controls')}\n"
         f"/pause /resume /skip /stop\n"
         f"/queue /shuffle /loop /clear\n"
+        f"/remove — Remove from queue\n"
         f"/volume — Set volume (1–200)\n\n"
         f"{bq('Extras')}\n"
         f"/lyrics — Get song lyrics\n"
         f"/suggest — Song suggestions\n"
+        f"/fav /favs /unfav — Favorites\n"
+        f"/download — Download as MP3\n"
+        f"/history — Recently played\n"
         f"/now — Current track info\n"
-        f"/panel — Open control panel\n"
+        f"/panel — Control panel\n"
+        f"/os — Premium OS dashboard\n"
+        f"/stats — Bot statistics\n"
+        f"/ping — Latency check\n"
         f"/help — This menu"
+    )
+
+
+def radio_card() -> str:
+    from bot.services.radio import list_stations
+
+    lines = [f"📻 {bold('Internet Radio')}", ""]
+    for key, s in list_stations():
+        lines.append(f"{s['emoji']} {bold(s['name'])} — {code('/radio ' + key)}")
+    lines.append(f"\n{italic('Tap a station below or use /radio <name>')}")
+    return "\n".join(lines)
+
+
+def mood_card() -> str:
+    from bot.services.music import MOOD_QUERIES
+
+    lines = [f"🎭 {bold('Mood Playlists')}", ""]
+    for mood in MOOD_QUERIES:
+        lines.append(f"• {bold(mood.title())} — {code('/mood ' + mood)}")
+    lines.append(f"\n{italic('Pick a mood below or use /mood <name>')}")
+    return "\n".join(lines)
+
+
+def favorites_card(favs: list[dict[str, Any]]) -> str:
+    if not favs:
+        return f"⭐ {bold('Favorites')}\n\n{bq('No favorites yet. Use /fav while a song is playing.')}"
+    lines = [f"⭐ {bold('Your Favorites')} — {len(favs)} track(s)\n"]
+    for i, f in enumerate(favs[:15], 1):
+        dur = format_duration(f.get("duration"))
+        lines.append(f"{i}. {esc(f.get('title', '?'))} {code(dur)}")
+    return "\n".join(lines)
+
+
+def history_card(history: list[dict[str, Any]]) -> str:
+    if not history:
+        return f"🕐 {bold('History')}\n\n{bq('No tracks played yet.')}"
+    lines = [f"🕐 {bold('Recently Played')}\n"]
+    for i, h in enumerate(history, 1):
+        lines.append(f"{i}. {esc(h.get('title', '?'))} — {italic(h.get('requester', ''))}")
+    return "\n".join(lines)
+
+
+def stats_card(stats: dict[str, Any], recent: list[dict[str, Any]]) -> str:
+    lines = [
+        f"📊 {bold('Bot Statistics')}\n",
+        f"⏱ Uptime: {code(str(stats.get('uptime', '—')))}",
+        f"🎵 Total plays: {code(str(stats.get('total_plays', 0)))}",
+        f"📡 Streams started: {code(str(stats.get('streams', 0)))}",
+        f"💬 Active chats: {code(str(stats.get('active_chats', 0)))}",
+        f"⚡ Commands handled: {code(str(stats.get('commands', 0)))}",
+        f"❌ Errors: {code(str(stats.get('errors', 0)))}",
+    ]
+    if recent:
+        lines.append(f"\n{bq('Recent Global Plays')}")
+        for h in recent[:5]:
+            lines.append(f"• {esc(h.get('title', '?'))}")
+    return "\n".join(lines)
+
+
+def os_dashboard_card(
+    current: dict[str, Any] | None,
+    queue_len: int,
+    is_playing: bool,
+    is_paused: bool,
+    loop_mode: str,
+    volume: int,
+    stats: dict[str, Any],
+    recent: list[dict[str, Any]],
+) -> str:
+    status = "⏸ Paused" if is_paused else ("▶️ Playing" if is_playing else "⏹ Idle")
+
+    now_block = "Nothing playing"
+    if current:
+        now_block = (
+            f"{current.get('title', 'Unknown')}\n"
+            f"{current.get('artist', '')} • {format_duration(current.get('duration'))}"
+        )
+
+    recent_lines = "\n".join(f"• {h.get('title', '?')}" for h in recent[:3]) or "—"
+
+    return (
+        f"🖥 {bold('Music OS Dashboard')}\n\n"
+        f"{bq(f'Status: {status}\nQueue: {queue_len} tracks\nLoop: {loop_mode} • Vol: {volume}%')}\n\n"
+        f"▶️ {bold('Now Playing')}\n"
+        f"{bq(now_block)}\n\n"
+        f"🕐 {bold('Recent')}\n"
+        f"{bq(recent_lines)}\n\n"
+        f"📊 {code(stats.get('uptime', '—'))}  •  "
+        f"🎵 {code(str(stats.get('total_plays', 0)))} plays  •  "
+        f"⚡ {code(str(stats.get('commands', 0)))} cmds"
     )

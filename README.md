@@ -33,7 +33,27 @@ A premium Telegram music & video bot with voice chat streaming, live streams, ly
 - HTML formatting with **bold**, *italic*, `code`, and blockquotes
 - Styled inline buttons (primary/success/danger)
 - Interactive control panel with full button controls
-- Search picker & suggestion cards
+- **OS Dashboard** (`/os`) — premium system-style control center
+- Inline search mode — type `@YourBot song name` in any chat
+
+### New in v2
+| Feature | Command |
+|---------|---------|
+| YouTube playlists | `/playlist <url>` |
+| Force play now | `/playnow <song>` |
+| Play next in queue | `/playnext <song>` |
+| Remove from queue | `/remove <#>` |
+| Internet radio (10 stations) | `/radio` |
+| Mood playlists | `/mood chill/party/workout…` |
+| Favorites | `/fav` `/favs` `/unfav` |
+| Download MP3 | `/download <song>` |
+| Play history | `/history` |
+| Bot stats | `/stats` |
+| OS dashboard | `/os` |
+| Latency check | `/ping` |
+| Inline search | `@bot <query>` |
+| Admin commands | `/sudo` `/astop` `/broadcast` |
+| Auto-leave idle VC | Configurable via `.env` |
 
 ## Requirements
 

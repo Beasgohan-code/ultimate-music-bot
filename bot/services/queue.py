@@ -88,6 +88,15 @@ class QueueManager:
         async with self._lock:
             random.shuffle(self._queues[chat_id])
 
+    async def add_front(self, chat_id: int, track: dict[str, Any]) -> int:
+        """Add track to front of queue (plays next)."""
+        async with self._lock:
+            q = self._queues[chat_id]
+            if len(q) >= self.max_size:
+                raise ValueError(f"Queue full (max {self.max_size})")
+            q.insert(0, track)
+            return 1
+
     async def remove_at(self, chat_id: int, index: int) -> dict[str, Any] | None:
         async with self._lock:
             q = self._queues[chat_id]

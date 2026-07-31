@@ -330,3 +330,94 @@ async def cb_suggest_play(query: CallbackQuery) -> None:
     else:
         await stream_manager.play(chat_id, track)
         await query.answer(f"▶️ Playing: {track['title'][:30]}")
+
+
+@router.callback_query(F.data == "ctrl:replay")
+async def cb_replay(query: CallbackQuery) -> None:
+    chat_id = query.message.chat.id
+    current = await queue_manager.get_current(chat_id)
+    if not current:
+        await query.answer("Nothing to replay", show_alert=True)
+        return
+    await stream_manager.play(chat_id, current)
+    await query.answer("⏮ Replaying")
+    await cb_panel(query)
+
+
+@router.callback_query(F.data.startswith("radio:"))
+async def cb_radio(query: CallbackQuery) -> None:
+    from bot.services.radio import get_station
+    from bot.services.history import history_tracker
+    from bot.services.stats import bot_stats
+
+    key = query.data.split(":", 1)[1]
+    station = get_station(key)
+    if not station:
+        await query.answer("Station not found", show_alert=True)
+        return
+
+    await query.answer(f"📻 Tuning to {station['name']}…")
+    chat_id = query.message.chat.id
+    track = await get_stream_url(station["url"])
+    if not track:
+        track = {
+            "title": station["name"],
+            "artist": station["genre"],
+            "url": station["url"],
+            "stream_url": station["url"],
+            "is_live": True,
+        }
+    else:
+        track["title"] = station["name"]
+        track["is_live"] = True
+    track["requester"] = query.from_user.full_name if query.from_user else "Unknown"
+    await stream_manager.play(chat_id, track)
+    await history_tracker.record(chat_id, track)
+    bot_stats.streams_started += 1
+    await cb_panel(query)
+
+
+@router.callback_query(F.data.startswith("mood:"))
+async def cb_mood(query: CallbackQuery) -> None:
+    from bot.services.music import get_mood_tracks
+    from bot.utils.helpers import cache_search_results
+
+    mood = query.data.split(":", 1)[1]
+    await query.answer(f"🎭 Loading {mood}…")
+    tracks = await get_mood_tracks(mood, limit=8)
+    if not tracks:
+        await query.message.edit_text(error_card("No tracks for this mood."), parse_mode="HTML")
+        return
+    cache_search_results(tracks)
+    from bot.utils.formatters import search_results_card
+    from bot.keyboards.inline import search_results_kb
+
+    await query.message.edit_text(
+        search_results_card(f"{mood} mood", tracks),
+        parse_mode="HTML",
+        reply_markup=search_results_kb(tracks),
+    )
+
+
+@router.callback_query(F.data.startswith("favplay:"))
+async def cb_favplay(query: CallbackQuery) -> None:
+    from bot.services.favorites import favorites_store
+
+    idx = int(query.data.split(":", 1)[1])
+    user_id = query.from_user.id if query.from_user else 0
+    favs = await favorites_store.list(user_id)
+    if idx >= len(favs):
+        await query.answer("Favorite not found", show_alert=True)
+        return
+
+    fav = favs[idx]
+    await query.answer("⏳ Loading…")
+    track = await get_stream_url(fav.get("url", ""))
+    if not track:
+        await query.answer("Failed to load", show_alert=True)
+        return
+
+    chat_id = query.message.chat.id
+    track["requester"] = query.from_user.full_name if query.from_user else "Unknown"
+    await stream_manager.play(chat_id, track)
+    await cb_panel(query)
