@@ -93,10 +93,7 @@ async def cmd_source(message: Message) -> None:
     """Show supported media sources."""
     await message.answer(
         f"📦 {bold('Supported Sources')}\n\n"
-        f"{bq('YouTube • YouTube Music • Spotify • SoundCloud\n"
-             f"Twitch • Vimeo • TikTok • Instagram\n"
-             f"Direct URLs • m3u8 live streams\n"
-             f"Uploaded files: MP3, M4A, OGG, FLAC, MP4, MKV, WebM')}\n\n"
+        f"{bq('YouTube, YouTube Music, Spotify, SoundCloud, Twitch, Vimeo, TikTok, Instagram, direct URLs, m3u8 live streams, and uploaded MP3/MKV/MP4 files.')}\n\n"
         f"{italic('Paste any URL or search by name.')}",
         parse_mode="HTML",
         reply_markup=main_menu_kb(),
