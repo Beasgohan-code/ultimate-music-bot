@@ -102,9 +102,24 @@ async def search_youtube(query: str, limit: int = 10) -> list[dict[str, Any]]:
     return [_normalize_entry(e) for e in entries if e]
 
 
+async def resolve_query(query: str) -> str:
+    """Resolve Spotify and other URLs to searchable queries."""
+    if "open.spotify.com/track/" in query or "spotify:track:" in query:
+        info = await _run_ytdl({**YDL_OPTS_BASE, "skip_download": True}, query)
+        if info and isinstance(info, dict):
+            title = info.get("title", "")
+            artist = info.get("artist") or info.get("uploader") or ""
+            if title:
+                return f"{artist} {title}".strip() if artist else title
+    if "open.spotify.com/playlist/" in query:
+        return query
+    return query
+
+
 async def get_track(query: str, requester: str = "", video: bool = False) -> dict[str, Any] | None:
+    resolved = await resolve_query(query)
     opts = YDL_VIDEO if video else YDL_AUDIO
-    search_query = query if is_url(query) else f"ytsearch1:{query}"
+    search_query = resolved if is_url(resolved) else f"ytsearch1:{resolved}"
     info = await _run_ytdl(opts, search_query)
     if not info:
         return None
@@ -121,6 +136,7 @@ async def get_track(query: str, requester: str = "", video: bool = False) -> dic
 
 
 async def get_stream_url(query: str, video: bool = False, live: bool = False) -> dict[str, Any] | None:
+    resolved = await resolve_query(query)
     if live:
         opts = {**YDL_LIVE, "format": "best"}
     elif video:
@@ -128,7 +144,7 @@ async def get_stream_url(query: str, video: bool = False, live: bool = False) ->
     else:
         opts = YDL_AUDIO
 
-    search_query = query if is_url(query) else f"ytsearch1:{query}"
+    search_query = resolved if is_url(resolved) else f"ytsearch1:{resolved}"
     info = await _run_ytdl(opts, search_query)
     if not info:
         return None

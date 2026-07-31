@@ -35,49 +35,10 @@ from bot.utils.formatters import (
     success_card,
 )
 from bot.utils.helpers import ensure_assistant_in_chat, extract_query, is_group_chat, reply_error
+from bot.utils.play_helpers import play_track
 
 logger = logging.getLogger(__name__)
 router = Router(name="advanced")
-
-
-async def _play_track(message: Message, track: dict, *, front: bool = False, force: bool = False) -> None:
-    chat_id = message.chat.id
-    requester = message.from_user.full_name if message.from_user else "Unknown"
-    track["requester"] = requester
-    auto_leave.touch(chat_id)
-
-    if is_group_chat(message):
-        err = await ensure_assistant_in_chat(message.bot, chat_id)
-        if err:
-            await reply_error(message, err)
-            return
-
-    if force or not stream_manager.is_playing(chat_id):
-        await stream_manager.play(chat_id, track)
-        await history_tracker.record(chat_id, track)
-        bot_stats.streams_started += 1
-        loop = await queue_manager.get_loop(chat_id)
-        vol = await queue_manager.get_volume(chat_id)
-        await message.answer(
-            now_playing_card(
-                track["title"], track.get("artist", ""), track.get("duration"),
-                requester, loop_mode=loop.value, volume=vol,
-            ),
-            parse_mode="HTML",
-            reply_markup=player_panel_kb(True),
-        )
-    elif front:
-        await queue_manager.add_front(chat_id, track)
-        await message.answer(
-            success_card(f"Added to front of queue: {track['title']}"),
-            parse_mode="HTML",
-        )
-    else:
-        pos = await queue_manager.add(chat_id, track)
-        await message.answer(
-            success_card(f"Queued at #{pos}: {track['title']}"),
-            parse_mode="HTML",
-        )
 
 
 @router.message(Command("playlist"))
@@ -132,7 +93,7 @@ async def cmd_playnow(message: Message) -> None:
         await status.edit_text(error_card("Track not found."), parse_mode="HTML")
         return
     await status.delete()
-    await _play_track(message, track, force=True)
+    await play_track(message, track, force=True)
 
 
 @router.message(Command("playnext"))
@@ -147,7 +108,7 @@ async def cmd_playnext(message: Message) -> None:
         await status.edit_text(error_card("Track not found."), parse_mode="HTML")
         return
     await status.delete()
-    await _play_track(message, track, front=True)
+    await play_track(message, track, front=True)
 
 
 @router.message(Command("remove"))
@@ -220,7 +181,7 @@ async def cmd_radio(message: Message) -> None:
         track["title"] = station["name"]
         track["is_live"] = True
     await status.delete()
-    await _play_track(message, track, force=True)
+    await play_track(message, track, force=True)
 
 
 @router.message(Command("fav"))

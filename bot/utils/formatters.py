@@ -198,6 +198,12 @@ def help_card() -> str:
         f"/os — Premium OS dashboard\n"
         f"/stats — Bot statistics\n"
         f"/ping — Latency check\n"
+        f"/join — Add assistant guide\n"
+        f"/info — Current track details\n"
+        f"/source — Supported platforms\n"
+        f"/speed — Playback speed (0.5–2x)\n"
+        f"/active — Playback status\n"
+        f"/id — Get chat & user IDs\n"
         f"/help — This menu"
     )
 

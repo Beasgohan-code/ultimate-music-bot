@@ -11,11 +11,13 @@ from aiogram.filters import Command
 from aiogram.types import Message
 
 from bot.keyboards.inline import player_panel_kb, search_results_kb
-from bot.services.music import get_stream_url, get_track, is_live_url, is_url, search_youtube
+from bot.services.autoleave import auto_leave
+from bot.services.music import get_stream_url, is_live_url, is_url, search_youtube
 from bot.services.queue import queue_manager
 from bot.services.stream import stream_manager
 from bot.utils.formatters import error_card, now_playing_card, search_results_card
 from bot.utils.helpers import ensure_assistant_in_chat, extract_query, is_group_chat, reply_error
+from bot.utils.play_helpers import play_track
 
 logger = logging.getLogger(__name__)
 router = Router(name="play")
@@ -29,60 +31,16 @@ async def _resolve_and_play(
     live: bool = False,
     queue_only: bool = False,
 ) -> None:
-    chat_id = message.chat.id
-    requester = message.from_user.full_name if message.from_user else "Unknown"
-
-    if is_group_chat(message):
-        err = await ensure_assistant_in_chat(message.bot, chat_id)
-        if err:
-            await reply_error(message, err)
-            return
-
     status = await message.answer("⏳ <b>Loading media…</b>", parse_mode="HTML")
-
     track = await get_stream_url(query, video=video, live=live)
     if not track:
         await status.edit_text(error_card("Could not find or extract media."), parse_mode="HTML")
         return
-
-    track["requester"] = requester
-
-    if queue_only or stream_manager.is_playing(chat_id):
-        try:
-            pos = await queue_manager.add(chat_id, track)
-            await status.edit_text(
-                f"✅ Added to queue at position <b>#{pos}</b>\n"
-                f"<blockquote>{track['title']}</blockquote>",
-                parse_mode="HTML",
-                reply_markup=player_panel_kb(True),
-            )
-            return
-        except ValueError as exc:
-            await status.edit_text(error_card(str(exc)), parse_mode="HTML")
-            return
-
-    try:
-        await stream_manager.play(chat_id, track)
-        loop = await queue_manager.get_loop(chat_id)
-        vol = await queue_manager.get_volume(chat_id)
-        card = now_playing_card(
-            track["title"],
-            track.get("artist", ""),
-            track.get("duration"),
-            requester,
-            video=track.get("is_video", False),
-            is_live=track.get("is_live", False),
-            loop_mode=loop.value,
-            volume=vol,
-        )
-        await status.edit_text(
-            card,
-            parse_mode="HTML",
-            reply_markup=player_panel_kb(is_playing=True),
-        )
-    except Exception as exc:
-        logger.exception("Play failed")
-        await status.edit_text(error_card(f"Playback failed: {exc}"), parse_mode="HTML")
+    await play_track(
+        message, track,
+        queue_only=queue_only or stream_manager.is_playing(message.chat.id),
+        edit_msg=status,
+    )
 
 
 @router.message(Command("play"))
@@ -305,9 +263,4 @@ async def handle_media_file(message: Message, bot: Bot) -> None:
         pos = await queue_manager.add(chat_id, track)
         await status.edit_text(f"✅ File queued at <b>#{pos}</b>", parse_mode="HTML")
     else:
-        await stream_manager.play(chat_id, track)
-        await status.edit_text(
-            now_playing_card(track["title"], requester=track["requester"]),
-            parse_mode="HTML",
-            reply_markup=player_panel_kb(True),
-        )
+        await play_track(message, track, force=True, edit_msg=status)

@@ -14,7 +14,7 @@ from aiogram.types import BotCommand
 
 from assistant.client import create_assistant
 from bot.config import config
-from bot.handlers import admin, advanced, callbacks, dashboard, extras, inline_mode, play, start
+from bot.handlers import admin, advanced, callbacks, dashboard, extras, inline_mode, misc, play, start
 from bot.middlewares.stats import StatsMiddleware
 from bot.services.autoleave import auto_leave
 from bot.services.stream import stream_manager
@@ -42,6 +42,9 @@ BOT_COMMANDS = [
     BotCommand(command="fav", description="Save to favorites"),
     BotCommand(command="favs", description="View favorites"),
     BotCommand(command="download", description="Download as MP3"),
+    BotCommand(command="join", description="How to add assistant"),
+    BotCommand(command="info", description="Current track info"),
+    BotCommand(command="source", description="Supported sources"),
     BotCommand(command="os", description="Premium OS dashboard"),
     BotCommand(command="panel", description="Control panel"),
     BotCommand(command="queue", description="View queue"),
@@ -70,6 +73,7 @@ async def main() -> None:
     dp.include_router(start.router)
     dp.include_router(play.router)
     dp.include_router(advanced.router)
+    dp.include_router(misc.router)
     dp.include_router(extras.router)
     dp.include_router(dashboard.router)
     dp.include_router(admin.router)

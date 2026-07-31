@@ -58,9 +58,13 @@ class StreamManager:
         url = track.get("stream_url") or track.get("url", "")
         is_video = track.get("is_video", False)
 
-        ffmpeg_params = None
+        filters: list[str] = []
+        speed = track.get("_speed") or 1.0
+        if speed != 1.0:
+            filters.append(f"atempo={speed}")
         if volume != 100:
-            ffmpeg_params = f"-af volume={volume / 100:.2f}"
+            filters.append(f"volume={volume / 100:.2f}")
+        ffmpeg_params = f"-af {','.join(filters)}" if filters else None
 
         return MediaStream(
             url,
@@ -69,6 +73,11 @@ class StreamManager:
         )
 
     async def play(self, chat_id: int, track: dict[str, Any]) -> None:
+        from bot.services.chat_settings import chat_settings
+
+        speed = await chat_settings.get(chat_id, "speed")
+        if speed and speed != 1.0:
+            track = {**track, "_speed": speed}
         vol = await queue_manager.get_volume(chat_id)
         stream = self._build_stream(track, vol)
         await self._calls.play(chat_id, stream)
