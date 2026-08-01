@@ -1,0 +1,204 @@
+./assistant/client.py:3:from __future__ import annotations
+./assistant/client.py:5:from pyrogram import Client
+./assistant/client.py:7:from bot.config import config
+./bot/config.py:3:from __future__ import annotations
+./bot/config.py:5:import os
+./bot/config.py:6:from dataclasses import dataclass, field
+./bot/config.py:7:from pathlib import Path
+./bot/config.py:9:from dotenv import load_dotenv
+./bot/handlers/admin.py:3:from __future__ import annotations
+./bot/handlers/admin.py:5:from aiogram import Router
+./bot/handlers/admin.py:6:from aiogram.filters import Command
+./bot/handlers/admin.py:7:from aiogram.types import Message
+./bot/handlers/admin.py:9:from bot.config import config
+./bot/handlers/admin.py:10:from bot.services.queue import queue_manager
+./bot/handlers/admin.py:11:from bot.services.stream import stream_manager
+./bot/handlers/admin.py:12:from bot.utils.formatters import error_card, success_card
+./bot/handlers/admin.py:13:from bot.utils.helpers import is_sudo, reply_error
+./bot/handlers/advanced.py:3:from __future__ import annotations
+./bot/handlers/advanced.py:5:import logging
+./bot/handlers/advanced.py:6:import os
+./bot/handlers/advanced.py:7:import tempfile
+./bot/handlers/advanced.py:9:from aiogram import Router
+./bot/handlers/advanced.py:10:from aiogram.filters import Command
+./bot/handlers/advanced.py:11:from aiogram.types import FSInputFile, Message
+./bot/handlers/advanced.py:13:from bot.keyboards.inline import favorites_kb, mood_kb, player_panel_kb, radio_kb, search_results_kb
+./bot/handlers/advanced.py:14:from bot.services.autoleave import auto_leave
+./bot/handlers/advanced.py:15:from bot.services.favorites import favorites_store
+./bot/handlers/advanced.py:16:from bot.services.history import history_tracker
+./bot/handlers/advanced.py:17:from bot.services.music import (
+./bot/handlers/advanced.py:24:from bot.services.queue import queue_manager
+./bot/handlers/advanced.py:25:from bot.services.radio import find_station, get_station, list_stations
+./bot/handlers/advanced.py:26:from bot.services.stats import bot_stats
+./bot/handlers/advanced.py:27:from bot.services.stream import stream_manager
+./bot/handlers/advanced.py:28:from bot.utils.formatters import (
+./bot/handlers/advanced.py:37:from bot.utils.helpers import ensure_assistant_in_chat, extract_query, is_group_chat, reply_error
+./bot/handlers/advanced.py:38:from bot.utils.play_helpers import play_track
+./bot/handlers/callbacks.py:3:from __future__ import annotations
+./bot/handlers/callbacks.py:5:import logging
+./bot/handlers/callbacks.py:7:from aiogram import F, Router
+./bot/handlers/callbacks.py:8:from aiogram.types import CallbackQuery, Message
+./bot/handlers/callbacks.py:10:from bot.keyboards.inline import player_panel_kb, queue_pagination_kb
+./bot/handlers/callbacks.py:11:from bot.services.music import get_stream_url
+./bot/handlers/callbacks.py:12:from bot.services.queue import queue_manager
+./bot/handlers/callbacks.py:13:from bot.services.stream import stream_manager
+./bot/handlers/callbacks.py:14:from bot.utils.formatters import error_card, now_playing_card, queue_card
+./bot/handlers/callbacks.py:15:from bot.utils.helpers import get_cached_track
+./bot/handlers/dashboard.py:3:from __future__ import annotations
+./bot/handlers/dashboard.py:5:from aiogram import Router
+./bot/handlers/dashboard.py:6:from aiogram.filters import Command
+./bot/handlers/dashboard.py:7:from aiogram.types import Message
+./bot/handlers/dashboard.py:9:from bot.keyboards.inline import os_dashboard_kb
+./bot/handlers/dashboard.py:10:from bot.services.history import history_tracker
+./bot/handlers/dashboard.py:11:from bot.services.queue import queue_manager
+./bot/handlers/dashboard.py:12:from bot.services.stats import bot_stats
+./bot/handlers/dashboard.py:13:from bot.services.stream import stream_manager
+./bot/handlers/dashboard.py:14:from bot.utils.formatters import os_dashboard_card, stats_card
+./bot/handlers/extras.py:3:from __future__ import annotations
+./bot/handlers/extras.py:5:from aiogram import Router
+./bot/handlers/extras.py:6:from aiogram.filters import Command
+./bot/handlers/extras.py:7:from aiogram.types import Message
+./bot/handlers/extras.py:9:from bot.keyboards.inline import suggestions_kb
+./bot/handlers/extras.py:10:from bot.services.lyrics import get_lyrics
+./bot/handlers/extras.py:11:from bot.services.music import get_suggestions, get_track
+./bot/handlers/extras.py:12:from bot.services.queue import queue_manager
+./bot/handlers/extras.py:13:from bot.utils.formatters import error_card, lyrics_card, suggestions_card
+./bot/handlers/extras.py:14:from bot.utils.helpers import cache_suggestions, extract_query, reply_error
+./bot/handlers/inline_mode.py:3:from __future__ import annotations
+./bot/handlers/inline_mode.py:5:from aiogram import Router
+./bot/handlers/inline_mode.py:6:from aiogram.types import InlineQuery, InlineQueryResultArticle, InputTextMessageContent
+./bot/handlers/inline_mode.py:8:from bot.services.music import search_youtube
+./bot/handlers/inline_mode.py:9:from bot.utils.formatters import format_duration
+./bot/handlers/misc.py:3:from __future__ import annotations
+./bot/handlers/misc.py:5:from aiogram import Router
+./bot/handlers/misc.py:6:from aiogram.filters import Command
+./bot/handlers/misc.py:7:from aiogram.types import Message
+./bot/handlers/misc.py:9:from bot.config import config
+./bot/handlers/misc.py:10:from bot.keyboards.inline import main_menu_kb
+./bot/handlers/misc.py:11:from bot.services.chat_settings import chat_settings
+./bot/handlers/misc.py:12:from bot.services.queue import queue_manager
+./bot/handlers/misc.py:13:from bot.services.stats import bot_stats
+./bot/handlers/misc.py:14:from bot.services.stream import stream_manager
+./bot/handlers/misc.py:15:from bot.utils.formatters import bq, bold, error_card, format_duration, italic, link
+./bot/handlers/misc.py:16:from bot.utils.helpers import extract_query, reply_error
+./bot/handlers/play.py:3:from __future__ import annotations
+./bot/handlers/play.py:5:import logging
+./bot/handlers/play.py:6:import os
+./bot/handlers/play.py:7:import tempfile
+./bot/handlers/play.py:9:from aiogram import Bot, F, Router
+./bot/handlers/play.py:10:from aiogram.filters import Command
+./bot/handlers/play.py:11:from aiogram.types import Message
+./bot/handlers/play.py:13:from bot.keyboards.inline import player_panel_kb, search_results_kb
+./bot/handlers/play.py:14:from bot.services.autoleave import auto_leave
+./bot/handlers/play.py:15:from bot.services.music import get_stream_url, is_live_url, is_url, search_youtube
+./bot/handlers/play.py:16:from bot.services.queue import queue_manager
+./bot/handlers/play.py:17:from bot.services.stream import stream_manager
+./bot/handlers/play.py:18:from bot.utils.formatters import error_card, now_playing_card, search_results_card
+./bot/handlers/play.py:19:from bot.utils.helpers import ensure_assistant_in_chat, extract_query, is_group_chat, reply_error
+./bot/handlers/play.py:20:from bot.utils.play_helpers import play_track
+./bot/handlers/start.py:3:from __future__ import annotations
+./bot/handlers/start.py:5:from aiogram import F, Router
+./bot/handlers/start.py:6:from aiogram.filters import Command, CommandStart
+./bot/handlers/start.py:7:from aiogram.types import CallbackQuery, Message
+./bot/handlers/start.py:9:from bot.keyboards.inline import main_menu_kb, settings_kb
+./bot/handlers/start.py:10:from bot.utils.formatters import help_card, welcome_message
+./bot/keyboards/inline.py:3:from __future__ import annotations
+./bot/keyboards/inline.py:5:from aiogram.enums import ButtonStyle
+./bot/keyboards/inline.py:6:from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+./bot/keyboards/inline.py:8:from bot.utils.formatters import format_duration
+./bot/middlewares/stats.py:3:from __future__ import annotations
+./bot/middlewares/stats.py:5:from typing import Any, Awaitable, Callable
+./bot/middlewares/stats.py:7:from aiogram import BaseMiddleware
+./bot/middlewares/stats.py:8:from aiogram.types import TelegramObject
+./bot/middlewares/stats.py:10:from bot.services.stats import bot_stats
+./bot/services/autoleave.py:3:from __future__ import annotations
+./bot/services/autoleave.py:5:import asyncio
+./bot/services/autoleave.py:6:import logging
+./bot/services/autoleave.py:7:import time
+./bot/services/autoleave.py:9:from bot.config import config
+./bot/services/autoleave.py:10:from bot.services.queue import queue_manager
+./bot/services/autoleave.py:11:from bot.services.stream import stream_manager
+./bot/services/chat_settings.py:3:from __future__ import annotations
+./bot/services/chat_settings.py:5:import asyncio
+./bot/services/chat_settings.py:6:import json
+./bot/services/chat_settings.py:7:import logging
+./bot/services/chat_settings.py:8:from pathlib import Path
+./bot/services/chat_settings.py:9:from typing import Any
+./bot/services/favorites.py:3:from __future__ import annotations
+./bot/services/favorites.py:5:import asyncio
+./bot/services/favorites.py:6:import json
+./bot/services/favorites.py:7:import logging
+./bot/services/favorites.py:8:from pathlib import Path
+./bot/services/favorites.py:9:from typing import Any
+./bot/services/history.py:3:from __future__ import annotations
+./bot/services/history.py:5:import asyncio
+./bot/services/history.py:6:from collections import defaultdict, deque
+./bot/services/history.py:7:from typing import Any
+./bot/services/lyrics.py:3:from __future__ import annotations
+./bot/services/lyrics.py:5:import logging
+./bot/services/lyrics.py:6:import re
+./bot/services/lyrics.py:8:import aiohttp
+./bot/services/music.py:3:from __future__ import annotations
+./bot/services/music.py:5:import asyncio
+./bot/services/music.py:6:import logging
+./bot/services/music.py:7:import re
+./bot/services/music.py:8:from typing import Any
+./bot/services/music.py:9:from urllib.parse import urlparse
+./bot/services/music.py:11:import yt_dlp
+./bot/services/queue.py:3:from __future__ import annotations
+./bot/services/queue.py:5:import asyncio
+./bot/services/queue.py:6:from collections import defaultdict
+./bot/services/queue.py:7:from enum import Enum
+./bot/services/queue.py:8:from typing import Any
+./bot/services/radio.py:3:from __future__ import annotations
+./bot/services/stats.py:3:from __future__ import annotations
+./bot/services/stats.py:5:import time
+./bot/services/stats.py:6:from dataclasses import dataclass, field
+./bot/services/stats.py:8:from bot.services.history import history_tracker
+./bot/services/stats.py:9:from bot.services.queue import queue_manager
+./bot/services/stream.py:3:from __future__ import annotations
+./bot/services/stream.py:5:import logging
+./bot/services/stream.py:6:import os
+./bot/services/stream.py:7:from typing import Any
+./bot/services/stream.py:9:from pytgcalls import PyTgCalls, filters
+./bot/services/stream.py:10:from pytgcalls.types import MediaStream, Update
+./bot/services/stream.py:11:from pytgcalls.types.stream import StreamEnded
+./bot/services/stream.py:13:from bot.services.queue import queue_manager
+./bot/utils/formatters.py:3:from __future__ import annotations
+./bot/utils/formatters.py:5:import html
+./bot/utils/formatters.py:6:from typing import Any
+./bot/utils/helpers.py:3:from __future__ import annotations
+./bot/utils/helpers.py:5:import logging
+./bot/utils/helpers.py:6:from typing import TYPE_CHECKING
+./bot/utils/helpers.py:8:from aiogram.types import Message
+./bot/utils/helpers.py:10:from bot.config import config
+./bot/utils/play_helpers.py:3:from __future__ import annotations
+./bot/utils/play_helpers.py:5:from aiogram.types import Message
+./bot/utils/play_helpers.py:7:from bot.keyboards.inline import player_panel_kb
+./bot/utils/play_helpers.py:8:from bot.services.autoleave import auto_leave
+./bot/utils/play_helpers.py:9:from bot.services.history import history_tracker
+./bot/utils/play_helpers.py:10:from bot.services.queue import queue_manager
+./bot/utils/play_helpers.py:11:from bot.services.stats import bot_stats
+./bot/utils/play_helpers.py:12:from bot.services.stream import stream_manager
+./bot/utils/play_helpers.py:13:from bot.utils.formatters import now_playing_card, success_card
+./bot/utils/play_helpers.py:14:from bot.utils.helpers import ensure_assistant_in_chat, is_group_chat, reply_error
+./main.py:3:from __future__ import annotations
+./main.py:5:import asyncio
+./main.py:6:import logging
+./main.py:7:import sys
+./main.py:9:from aiogram import Bot, Dispatcher
+./main.py:10:from aiogram.client.default import DefaultBotProperties
+./main.py:11:from aiogram.enums import ParseMode
+./main.py:12:from aiogram.fsm.storage.memory import MemoryStorage
+./main.py:13:from aiogram.types import BotCommand
+./main.py:15:from assistant.client import create_assistant
+./main.py:16:from bot.config import config
+./main.py:17:from bot.handlers import admin, advanced, callbacks, dashboard, extras, inline_mode, misc, play, start
+./main.py:18:from bot.middlewares.stats import StatsMiddleware
+./main.py:19:from bot.services.autoleave import auto_leave
+./main.py:20:from bot.services.stream import stream_manager
+./session_generator.py:4:from __future__ import annotations
+./session_generator.py:6:import asyncio
+./session_generator.py:7:import os
+./session_generator.py:8:import sys
+./session_generator.py:10:from dotenv import load_dotenv

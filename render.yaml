@@ -1,0 +1,27 @@
+# Exported from Render on 2026-08-01T07:14:00Z
+version: "1"
+projects:
+- name: My project
+  environments:
+  - name: Production
+    services:
+    - type: web
+      name: ultimate-music-bot
+      runtime: python
+      repo: https://github.com/Beasgohan-code/ultimate-music-bot
+      branch: cursor/ultimate-music-bot-0795
+      plan: free
+      envVars:
+      - key: SUDO_USERS
+        sync: false
+      - key: API_HASH
+        sync: false
+      - key: API_ID
+        sync: false
+      - key: BOT_TOKEN
+        sync: false
+      region: frankfurt
+      buildCommand: pip install -r requirements.txt
+      startCommand: python main.py
+      autoDeployTrigger: commit
+
