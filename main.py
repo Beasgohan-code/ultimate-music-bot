@@ -13,6 +13,21 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand
 
 from assistant.client import create_assistant
+
+_original_get_event_loop = asyncio.get_event_loop
+
+def _patched_get_event_loop():
+    try:
+        return _original_get_event_loop()
+    except RuntimeError as ex:
+        if "There is no current event loop in thread" in str(ex):
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            return loop
+        raise
+
+asyncio.get_event_loop = _patched_get_event_loop
+
 from bot.config import config
 from bot.handlers import admin, advanced, callbacks, dashboard, extras, inline_mode, misc, play, start
 from bot.middlewares.stats import StatsMiddleware
