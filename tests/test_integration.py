@@ -776,3 +776,232 @@ async def test_thumbnail_handles_live_and_missing_duration():
             elapsed=0, bot_name="TestBot",
         )
         assert path is not None, f"duration={duration!r} broke the renderer"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Scheduler
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_parse_when_accepts_the_documented_formats():
+    from bot.services.scheduler import parse_when
+
+    # 24h, 12h, compact, and with/without minutes
+    for text in ("07:00", "7:00", "0700", "7am", "7:30 pm", "19:45"):
+        assert parse_when(text, 0) is not None, f"{text} should parse"
+
+    # daily, either word order
+    for text in ("daily 07:00", "07:00 daily"):
+        epoch, daily = parse_when(text, 0)
+        assert epoch == 0 and daily == "07:00"
+
+    # relative
+    for text in ("in 30m", "45 minutes", "2h", "in 3 hours"):
+        epoch, daily = parse_when(text, 0)
+        assert daily == "" and epoch > 0
+
+    for bad in ("bogus", "25:00", "7:99", "", "tomorrow", "in 0m", "in 999h"):
+        assert parse_when(bad, 0) is None, f"{bad!r} should be rejected"
+
+
+def test_parse_when_respects_timezone_and_rolls_forward():
+    import time
+
+    from bot.services.scheduler import parse_when
+
+    # A one-shot clock time is always in the future, never in the past.
+    for offset in (-480, 0, 330, 840):
+        epoch, _ = parse_when("07:00", offset)
+        assert epoch > time.time(), f"offset {offset} produced a past time"
+        assert epoch - time.time() <= 24 * 3600 + 60
+
+
+def test_twelve_hour_conversion_is_correct():
+    from datetime import datetime, timezone
+
+    from bot.services.scheduler import parse_when
+
+    def hour_utc(text):
+        epoch, _ = parse_when(text, 0)
+        return datetime.fromtimestamp(epoch, timezone.utc).hour
+
+    assert hour_utc("12am") == 0, "12am is midnight"
+    assert hour_utc("12pm") == 12, "12pm is noon"
+    assert hour_utc("1am") == 1
+    assert hour_utc("11pm") == 23
+
+
+def test_daily_job_next_epoch_is_always_ahead():
+    import time
+
+    from bot.services.scheduler import Job
+
+    for offset in (-300, 0, 330):
+        for clock in ("00:00", "07:00", "12:30", "23:59"):
+            job = Job(id="x", chat_id=1, user_id=1, query="q",
+                      daily_at=clock, tz_offset_min=offset)
+            assert job.next_epoch() > time.time()
+
+
+@pytest.mark.asyncio
+async def test_scheduler_persists_and_expires_jobs():
+    import time
+
+    from bot.services.scheduler import scheduler
+
+    chat = -100811
+    await scheduler.clear(chat)
+
+    one_shot = await scheduler.add(chat, 1, "lofi", "in 5m", 0)
+    daily = await scheduler.add(chat, 1, "jazz", "daily 07:00", 330)
+    assert one_shot and daily
+
+    # Survives a reload straight from storage.
+    assert len(await scheduler.list_jobs(chat)) == 2
+
+    # Force the one-shot due and run a tick by hand.
+    jobs = await scheduler._load(chat)
+    for job in jobs:
+        if job.id == one_shot.id:
+            job.run_at = time.time() - 1
+    await scheduler._save(chat, jobs)
+
+    due = [j.id for j in await scheduler.due_jobs()]
+    assert one_shot.id in due
+
+    for job in await scheduler.due_jobs():
+        await scheduler._complete(job)
+
+    remaining = {j.id for j in await scheduler.list_jobs(chat)}
+    assert one_shot.id not in remaining, "one-shot must be removed after firing"
+    assert daily.id in remaining, "daily must survive firing"
+    await scheduler.clear(chat)
+
+
+@pytest.mark.asyncio
+async def test_scheduler_enforces_the_per_chat_cap():
+    from bot.services.scheduler import MAX_JOBS_PER_CHAT, scheduler
+
+    chat = -100812
+    await scheduler.clear(chat)
+    for n in range(MAX_JOBS_PER_CHAT):
+        assert await scheduler.add(chat, 1, f"t{n}", "in 10m", 0)
+    with pytest.raises(ValueError):
+        await scheduler.add(chat, 1, "one too many", "in 10m", 0)
+    assert await scheduler.clear(chat) == MAX_JOBS_PER_CHAT
+
+
+@pytest.mark.asyncio
+async def test_scheduler_listing_is_soonest_first():
+    from bot.services.scheduler import scheduler
+
+    chat = -100813
+    await scheduler.clear(chat)
+    await scheduler.add(chat, 1, "later", "in 3h", 0)
+    await scheduler.add(chat, 1, "sooner", "in 10m", 0)
+    jobs = await scheduler.list_jobs(chat)
+    assert [j.query for j in jobs] == ["sooner", "later"]
+    await scheduler.clear(chat)
+
+
+@pytest.mark.asyncio
+async def test_scheduler_remove_is_exact():
+    from bot.services.scheduler import scheduler
+
+    chat = -100814
+    await scheduler.clear(chat)
+    job = await scheduler.add(chat, 1, "x", "in 10m", 0)
+    assert await scheduler.remove(chat, "nosuchid") is False
+    assert await scheduler.remove(chat, job.id.upper()) is True, "ids are case-insensitive"
+    assert await scheduler.list_jobs(chat) == []
+
+
+def test_scheduler_jobs_are_json_serialisable():
+    """Jobs round-trip through the JSON store, so no exotic field types."""
+    import json
+    from dataclasses import asdict
+
+    from bot.services.scheduler import Job
+
+    job = Job(id="a1", chat_id=-1, user_id=2, query="q", daily_at="07:00", tz_offset_min=330)
+    restored = Job(**json.loads(json.dumps(asdict(job))))
+    assert restored == job
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Real download pipeline (skipped without ffmpeg)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _have_ffmpeg() -> bool:
+    import shutil
+
+    return shutil.which("ffmpeg") is not None
+
+
+@pytest.mark.skipif(not _have_ffmpeg(), reason="ffmpeg not installed")
+@pytest.mark.asyncio
+async def test_real_download_produces_a_valid_mp3(tmp_path):
+    """End-to-end: fetch a real file, transcode it, verify the bitrate."""
+    import subprocess
+    import threading
+    from functools import partial
+    from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+
+    # Generate a genuine 3-second tone to serve.
+    source = tmp_path / "tone.wav"
+    subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi",
+         "-i", "sine=frequency=440:duration=3", "-ac", "2", str(source)],
+        check=True,
+    )
+
+    handler = partial(SimpleHTTPRequestHandler, directory=str(tmp_path))
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    port = server.server_address[1]
+
+    from bot.services.downloads import cleanup, download_track
+
+    try:
+        track = {
+            "id": "tonetest", "title": "Tone Test", "artist": "Generator",
+            "url": f"http://127.0.0.1:{port}/tone.wav", "source": "generic",
+        }
+        path = await download_track(track)
+        try:
+            assert path.exists() and path.suffix == ".mp3"
+            assert path.stat().st_size > 1000
+
+            probe = subprocess.run(
+                ["ffmpeg", "-hide_banner", "-i", str(path), "-f", "null", "-"],
+                capture_output=True, text=True,
+            ).stderr
+            assert "Audio: mp3" in probe, f"not a valid mp3:\n{probe[-400:]}"
+        finally:
+            await cleanup(path)
+        assert not path.parent.exists(), "temp directory leaked"
+    finally:
+        server.shutdown()
+
+
+@pytest.mark.skipif(not _have_ffmpeg(), reason="ffmpeg not installed")
+@pytest.mark.asyncio
+async def test_failed_download_leaves_no_temp_directories():
+    from bot.config import DOWNLOAD_DIR
+    from bot.services.downloads import DownloadError, download_track
+
+    before = len(list(DOWNLOAD_DIR.iterdir())) if DOWNLOAD_DIR.exists() else 0
+    with pytest.raises(DownloadError):
+        # Port 9 is the discard service — nothing will answer.
+        await download_track({"id": "dead", "title": "Dead", "url": "http://127.0.0.1:9/x.mp3"})
+    after = len(list(DOWNLOAD_DIR.iterdir())) if DOWNLOAD_DIR.exists() else 0
+    assert after == before, "a failed download leaked its temp directory"
+
+
+@pytest.mark.asyncio
+async def test_missing_ffmpeg_gives_a_clear_error(monkeypatch):
+    import bot.services.downloads as downloads
+
+    monkeypatch.setattr(downloads.shutil, "which", lambda _: None)
+    with pytest.raises(downloads.DownloadError) as excinfo:
+        await downloads.download_track({"id": "x", "title": "X", "url": "http://example.com/a.mp3"})
+    assert "ffmpeg" in str(excinfo.value).lower()

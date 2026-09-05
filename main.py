@@ -50,7 +50,8 @@ from bot.handlers import (  # noqa: E402
 )
 from bot.middlewares.enforcement import EnforcementMiddleware  # noqa: E402
 from bot.middlewares.gatekeeper import GatekeeperMiddleware  # noqa: E402
-from bot.services.autoleave import auto_leave  # noqa: E402
+from bot.services.autoleave import auto_leave
+from bot.services.scheduler import scheduler  # noqa: E402
 from bot.services.database import database  # noqa: E402
 from bot.services.i18n import translator  # noqa: E402
 from bot.services.stream import stream_manager  # noqa: E402
@@ -92,10 +93,12 @@ PUBLIC_COMMANDS = [
     BotCommand(command="seek", description="Seek within the track"),
     BotCommand(command="loop", description="Loop the track or queue"),
     BotCommand(command="volume", description="Set volume (1-200)"),
+    BotCommand(command="song", description="Download a track as MP3"),
     BotCommand(command="lyrics", description="Fetch song lyrics"),
     BotCommand(command="radio", description="Internet radio stations"),
     BotCommand(command="playlists", description="Your saved playlists"),
     BotCommand(command="top", description="Most played tracks"),
+    BotCommand(command="schedule", description="Schedule playback for later"),
     BotCommand(command="settings", description="Configure this chat"),
     BotCommand(command="help", description="All commands"),
 ]
@@ -105,6 +108,8 @@ ADMIN_COMMANDS = PUBLIC_COMMANDS + [
     BotCommand(command="mute", description="Mute a user"),
     BotCommand(command="warn", description="Warn a user"),
     BotCommand(command="purge", description="Bulk delete messages"),
+    BotCommand(command="voteskip", description="Configure vote-to-skip"),
+    BotCommand(command="unschedule", description="Cancel a scheduled play"),
     BotCommand(command="lock", description="Lock a message type"),
     BotCommand(command="setwelcome", description="Set the welcome message"),
     BotCommand(command="filters", description="Manage auto-reply filters"),
@@ -117,6 +122,71 @@ def _banner() -> None:
     logger.info("  Music streaming + group management for Telegram")
     logger.info("=" * 62)
 
+
+
+
+def _make_schedule_runner(bot):
+    """Build the callback the scheduler uses to start playback for a job."""
+
+    async def run(job) -> None:
+        from bot.services.music import get_stream_url
+        from bot.services.queue import queue_manager
+        from bot.services.stream import stream_manager
+        from bot.utils.cards import error_card, now_playing_card
+        from bot.utils.rich import RichCard, b, plain
+
+        logger.info("Firing schedule %s in %s: %s", job.id, job.chat_id, job.query)
+
+        async def tell(card) -> None:
+            try:
+                await bot.send_message(job.chat_id, card.to_html(), parse_mode="HTML")
+            except Exception as exc:
+                logger.debug("Could not notify %s: %s", job.chat_id, exc)
+
+        track = await get_stream_url(job.query)
+        if not track:
+            await tell(
+                error_card(
+                    f"Scheduled play failed — I could not find “{job.query}”.",
+                    "Update it with /schedule, or remove it with /unschedule.",
+                )
+            )
+            return
+
+        track["requester"] = "Scheduler"
+        try:
+            await stream_manager.play(job.chat_id, track)
+        except Exception as exc:
+            await tell(
+                error_card(
+                    f"Scheduled play failed: {exc}",
+                    "Make sure the voice chat is open when the schedule fires.",
+                )
+            )
+            return
+
+        await tell(
+            RichCard()
+            .heading([plain("⏰ "), b("Scheduled Playback")], size=1)
+            .para([plain("Starting "), b(track.get("title", job.query))])
+            .footer("Set up with /schedule  •  cancel with /unschedule")
+        )
+        try:
+            await bot.send_message(
+                job.chat_id,
+                now_playing_card(
+                    track,
+                    elapsed=0,
+                    queue_len=await queue_manager.size(job.chat_id),
+                    volume=await queue_manager.get_volume(job.chat_id),
+                    loop_mode=(await queue_manager.get_loop(job.chat_id)).value,
+                ).to_html(),
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+
+    return run
 
 
 async def _janitor() -> None:
@@ -188,6 +258,9 @@ async def main() -> None:
     await calls.start()
     await auto_leave.start()
 
+    scheduler.set_runner(_make_schedule_runner(bot))
+    await scheduler.start()
+
     janitor = asyncio.create_task(_janitor())
 
     try:
@@ -225,6 +298,7 @@ async def main() -> None:
     finally:
         janitor.cancel()
         logger.info("Shutting down…")
+        await scheduler.stop()
         await auto_leave.stop()
         for chat_id in list(stream_manager.active_chats):
             try:

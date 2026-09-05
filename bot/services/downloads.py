@@ -38,6 +38,23 @@ class DownloadError(RuntimeError):
     """Raised with a user-presentable message."""
 
 
+class _YdlLogger:
+    """Route yt-dlp chatter into our logger instead of stdout."""
+
+    def debug(self, msg: str) -> None:
+        if not msg.startswith("[download]"):
+            logger.debug("yt-dlp: %s", msg)
+
+    def info(self, msg: str) -> None:
+        logger.debug("yt-dlp: %s", msg)
+
+    def warning(self, msg: str) -> None:
+        logger.debug("yt-dlp: %s", msg)
+
+    def error(self, msg: str) -> None:
+        logger.warning("yt-dlp: %s", msg)
+
+
 def cache_key(track: dict[str, Any], *, video: bool = False) -> str:
     """Stable identity for a track, independent of how it was searched for."""
     ident = track.get("id") or track.get("url") or track.get("title", "")
@@ -105,6 +122,14 @@ def _ytdl_download(track: dict[str, Any], target_dir: Path, video: bool) -> Path
             "no_warnings": True,
             "noplaylist": True,
             "nocheckcertificate": True,
+            # `quiet` alone does not silence the progress bar; without this
+            # every download spams the server log with carriage returns.
+            "noprogress": True,
+            "consoletitle": False,
+            "logger": _YdlLogger(),
+            "retries": 3,
+            "fragment_retries": 3,
+            "socket_timeout": 30,
         }
     )
     if config.cookies_file and os.path.isfile(config.cookies_file):
@@ -146,7 +171,8 @@ async def download_track(track: dict[str, Any], *, video: bool = False) -> Path:
     if size_mb > config.max_download_mb:
         shutil.rmtree(target, ignore_errors=True)
         raise DownloadError(
-            f"That file is {size_mb:.0f} MB — over the {config.max_download_mb} MB limit."
+            f"That file is {size_mb:.1f} MB, over the {config.max_download_mb} MB limit. "
+            "Telegram caps bot uploads at 50 MB — try a shorter track."
         )
     return path
 

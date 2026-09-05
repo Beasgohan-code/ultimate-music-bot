@@ -146,6 +146,9 @@ class Config:
     max_playlist_size: int = field(default_factory=lambda: _env_int("MAX_PLAYLIST_SIZE", 100))
     duration_limit_min: int = field(default_factory=lambda: _env_int("DURATION_LIMIT", 180))
     video_limit_min: int = field(default_factory=lambda: _env_int("VIDEO_LIMIT", 60))
+    default_tz_offset_min: int = field(
+        default_factory=lambda: _env_int("DEFAULT_TZ_OFFSET_MIN", 0)
+    )
     voteskip_ratio: float = field(
         default_factory=lambda: _env_float("VOTESKIP_RATIO", 0.5)
     )

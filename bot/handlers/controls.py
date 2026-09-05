@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 
 from aiogram import Bot, Router
 from aiogram.filters import Command
@@ -437,7 +438,7 @@ async def cmd_voteskip_config(message: Message) -> None:
         await send_card(message, card)
         return
 
-    if not await _can_control(message):
+    if not await _can_control(message, message.bot):
         return
 
     arg = args[0].lower()
@@ -460,3 +461,221 @@ async def cmd_voteskip_config(message: Message) -> None:
         return
     ratio = await voteskip.set_ratio(chat_id, pct / 100)
     await send_card(message, success_card(f"Vote threshold set to {int(ratio * 100)}% of listeners."))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Scheduled playback
+# ─────────────────────────────────────────────────────────────────────────────
+
+_SCHEDULE_USAGE = (
+    RichCard()
+    .heading([plain("⏰ "), b("Scheduled Playback")], size=1)
+    .para([plain("Start music automatically at a set time.")])
+    .table(
+        ["Command", "Effect"],
+        [
+            ["/schedule 07:00 lofi beats", "once, at the next 07:00"],
+            ["/schedule daily 07:00 lofi", "every morning at 07:00"],
+            ["/schedule in 30m my playlist", "30 minutes from now"],
+            ["/schedule 7:30pm chill mix", "12-hour clock works too"],
+            ["/schedules", "list what's queued up"],
+            ["/unschedule <id>", "cancel one job"],
+            ["/unschedule all", "cancel everything"],
+        ],
+    )
+    .para(
+        [
+            plain("Set your local time first with "),
+            c("/timezone +5:30"),
+            plain(" so times mean what you expect."),
+        ]
+    )
+    .footer("The voice chat must be open when the job fires.")
+)
+
+
+async def _chat_tz(chat_id: int) -> int:
+    raw = await database.get_chat_value(
+        chat_id, "tz_offset_min", config.default_tz_offset_min
+    )
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _fmt_offset(minutes: int) -> str:
+    sign = "+" if minutes >= 0 else "-"
+    h, m = divmod(abs(int(minutes)), 60)
+    return f"UTC{sign}{h:02d}:{m:02d}"
+
+
+@router.message(Command("timezone", "settz"))
+async def cmd_timezone(message: Message, bot: Bot) -> None:
+    """Set the chat's UTC offset so schedules use local time."""
+    from bot.utils.cards import error_card, success_card
+
+    args = (message.text or "").split(maxsplit=1)
+    current = await _chat_tz(message.chat.id)
+
+    if len(args) < 2:
+        await send_card(
+            message,
+            RichCard()
+            .heading([plain("🌍 "), b("Timezone")], size=1)
+            .para([plain("This chat is set to "), c(_fmt_offset(current)), plain(".")])
+            .para([plain("Change it with "), c("/timezone +5:30"), plain(" or "), c("/timezone -4")])
+            .footer("Used by /schedule to interpret clock times."),
+        )
+        return
+
+    if not await _can_control(message, bot):
+        return
+
+    raw = args[1].strip().upper().replace("UTC", "").replace("GMT", "").strip()
+    m = re.match(r"^([+-]?)(\d{1,2})(?::?(\d{2}))?$", raw)
+    if not m:
+        await send_card(message, error_card("Usage: /timezone +5:30", "Offsets from UTC-12:00 to UTC+14:00."))
+        return
+
+    sign = -1 if m.group(1) == "-" else 1
+    offset = sign * (int(m.group(2)) * 60 + int(m.group(3) or 0))
+    if not -720 <= offset <= 840:
+        await send_card(message, error_card("That offset is out of range (UTC-12:00 … UTC+14:00)."))
+        return
+
+    await database.set_chat_value(message.chat.id, "tz_offset_min", offset)
+    await send_card(message, success_card(f"Timezone set to {_fmt_offset(offset)}."))
+
+
+@router.message(Command("schedule", "sched"))
+async def cmd_schedule(message: Message, bot: Bot) -> None:
+    """Schedule playback: /schedule [daily] <time> <song or playlist>."""
+    from bot.services.scheduler import scheduler
+    from bot.utils.cards import error_card
+
+    if not is_group(message):
+        await send_card(message, error_card("Scheduling only works in groups with a voice chat."))
+        return
+
+    args = (message.text or "").split(maxsplit=1)
+    if len(args) < 2:
+        await send_card(message, _SCHEDULE_USAGE)
+        return
+
+    if not await _can_control(message, bot):
+        return
+
+    rest = args[1].strip()
+    tz = await _chat_tz(message.chat.id)
+
+    # Pull the time spec off the front, longest match first so "daily 07:00"
+    # and "in 30m" win over a bare "07:00".
+    from bot.services.scheduler import parse_when
+
+    when_text, query = "", ""
+    words = rest.split()
+    for take in range(min(4, len(words)), 0, -1):
+        candidate = " ".join(words[:take])
+        if parse_when(candidate, tz):
+            when_text, query = candidate, " ".join(words[take:])
+            break
+
+    if not when_text:
+        await send_card(
+            message,
+            error_card(
+                "I could not read that time.",
+                "Try /schedule 07:00 lofi, /schedule daily 8pm jazz, or /schedule in 30m rock.",
+            ),
+        )
+        return
+    if not query:
+        await send_card(message, error_card("Tell me what to play.", f"/schedule {when_text} <song or playlist>"))
+        return
+
+    try:
+        job = await scheduler.add(
+            message.chat.id,
+            message.from_user.id if message.from_user else 0,
+            query,
+            when_text,
+            tz,
+        )
+    except ValueError as exc:
+        await send_card(message, error_card(str(exc), "Remove one with /unschedule <id>."))
+        return
+
+    if not job:
+        await send_card(message, error_card("I could not read that time."))
+        return
+
+    await send_card(
+        message,
+        RichCard()
+        .heading([plain("⏰ "), b("Scheduled")], size=1)
+        .para([plain("I will play "), b(query[:80]), plain(" ")])
+        .table(
+            ["Field", "Value"],
+            [
+                ["When", job.describe()],
+                ["Timezone", _fmt_offset(tz)],
+                ["Job id", job.id],
+            ],
+        )
+        .footer(f"Cancel with /unschedule {job.id}  •  see all with /schedules"),
+    )
+
+
+@router.message(Command("schedules", "scheduled"))
+async def cmd_schedules(message: Message) -> None:
+    from bot.services.scheduler import scheduler
+
+    jobs = await scheduler.list_jobs(message.chat.id)
+    if not jobs:
+        await send_card(
+            message,
+            RichCard()
+            .heading([plain("⏰ "), b("Schedules")], size=1)
+            .para([i("Nothing scheduled in this chat.")])
+            .footer("Add one with /schedule 07:00 <song>"),
+        )
+        return
+
+    tz = await _chat_tz(message.chat.id)
+    rows = [
+        [job.id, job.describe(), (job.query[:36] + "…") if len(job.query) > 36 else job.query]
+        for job in jobs
+    ]
+    await send_card(
+        message,
+        RichCard()
+        .heading([plain("⏰ "), b("Schedules")], size=1)
+        .table(["ID", "When", "What"], rows)
+        .para([i(f"Times are {_fmt_offset(tz)}.")])
+        .footer("/unschedule <id> to cancel  •  /unschedule all to clear"),
+    )
+
+
+@router.message(Command("unschedule", "delschedule"))
+async def cmd_unschedule(message: Message, bot: Bot) -> None:
+    from bot.services.scheduler import scheduler
+    from bot.utils.cards import error_card, success_card
+
+    args = (message.text or "").split(maxsplit=1)
+    if len(args) < 2:
+        await send_card(message, error_card("Usage: /unschedule <id>", "Or /unschedule all."))
+        return
+    if not await _can_control(message, bot):
+        return
+
+    target = args[1].strip().lower()
+    if target == "all":
+        count = await scheduler.clear(message.chat.id)
+        await send_card(message, success_card(f"Cleared {count} schedule(s)."))
+        return
+
+    if await scheduler.remove(message.chat.id, target):
+        await send_card(message, success_card(f"Schedule {target} cancelled."))
+    else:
+        await send_card(message, error_card(f"No schedule with id {target}.", "See /schedules."))

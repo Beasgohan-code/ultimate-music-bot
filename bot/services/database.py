@@ -31,6 +31,7 @@ _COLLECTIONS = (
     "banned",  # globally banned users
     "auth",  # per-chat authorised (non-admin) users
     "cache",  # resolved track cache (query -> track)
+    "schedules",  # scheduled playback jobs
 )
 
 

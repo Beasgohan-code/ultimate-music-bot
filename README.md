@@ -40,6 +40,7 @@ that don't support it yet.
 | **Playlists** | `/saveplaylist <name>`, `/playlists`, `/playplaylist <name>`, `/delplaylist <name>`, `/fav`, `/favs` |
 | **Extras** | `/lyrics`, `/song` (cached MP3 download), `/history`, `/top`, `/mood <vibe>`, `/player` panel, inline mode |
 | **Fair play** | `/voteskip` — non-admins vote to skip; admins and the requester skip instantly |
+| **Scheduling** | `/schedule 07:00 lofi`, `/schedule daily 8pm jazz`, `/schedule in 30m rock`, `/schedules`, `/unschedule` |
 
 The **player panel** is an inline keyboard that updates in place — pause, resume,
 skip, loop, shuffle, volume, lyrics and queue without typing a command.
@@ -47,6 +48,10 @@ skip, loop, shuffle, volume, lyrics and queue without typing a command.
 Now-playing announcements render as a **generated image card** — blurred cover
 art, title, artist, requester and a progress bar. Turn it off per chat if you
 prefer plain text.
+
+**Scheduled playback** starts music on a timer — once, or every day at the same
+time. Jobs are persisted, so a restart doesn't lose them. Set `/timezone +5:30`
+once per chat and clock times mean local time.
 
 Downloaded tracks are **cached by Telegram `file_id`**. The first request for a
 song downloads and uploads it; every later request for the same song is a single
@@ -151,9 +156,13 @@ With `WEB_ENABLED=true` the bot serves a live status page on `WEB_PORT`:
 python -m pytest tests/ -q
 ```
 
-Covers rich rendering and HTML escaping, command-routing conflicts, queue and loop
-semantics, warn escalation, word-boundary blacklist matching, lock propagation,
-duration parsing, placeholder injection safety, and locale integrity.
+58 tests covering rich rendering and HTML escaping, command-routing conflicts,
+queue and loop semantics, warn escalation, word-boundary blacklist matching, lock
+propagation, duration and schedule parsing, placeholder injection safety, locale
+integrity, download-cache behaviour, and vote thresholds.
+
+Three tests transcode a real generated tone through FFmpeg to prove the download
+pipeline end to end; they skip automatically when FFmpeg is not installed.
 
 ---
 
