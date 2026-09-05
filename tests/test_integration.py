@@ -1646,3 +1646,121 @@ def test_search_keyboard_is_compact():
     picker = [r for r in rows if r and (r[0].callback_data or "").startswith("play:")]
     assert all(len(r) <= 4 for r in picker), "picker rows too wide"
     assert sum(len(r) for r in picker) == 8, "results went missing"
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Search backend fallback
+#
+# When a host's IP is blocked by YouTube, every YouTube query fails
+# identically. Falling back to a different service keeps the bot usable.
+# ──────────────────────────────────────────────────────────────────────────
+
+_BLOCK_ERROR = "ERROR: [youtube] x: Failed to extract any player response"
+
+
+def _stub_backends(monkeypatch, behaviour):
+    """Replace _run_ytdl with a scripted responder; returns the call log."""
+    from bot.services import music
+
+    calls: list[str] = []
+
+    async def fake(opts, query):
+        calls.append(query)
+        kind = behaviour(query)
+        if kind == "block":
+            music._last_error = _BLOCK_ERROR
+            return None
+        if kind == "empty":
+            music._last_error = ""
+            return {"entries": []}
+        music._last_error = ""
+        return {"entries": [{"id": "1", "title": f"hit:{query.split(':')[0]}", "url": "u"}]}
+
+    monkeypatch.setattr(music, "_run_ytdl", fake)
+    return calls
+
+
+def test_blocked_youtube_falls_back_to_another_backend(monkeypatch):
+    import asyncio
+
+    from bot.services import music
+
+    calls = _stub_backends(
+        monkeypatch, lambda q: "block" if q.startswith("ytsearch") else "ok"
+    )
+    info = asyncio.run(music._search_with_fallback("some song", {}))
+
+    assert info, "fallback produced nothing"
+    assert info["entries"][0]["title"] == "hit:scsearch1"
+    assert [c.split(":")[0] for c in calls] == ["ytsearch1", "scsearch1"]
+
+
+def test_working_youtube_is_not_second_guessed(monkeypatch):
+    """The fallback must not cost an extra request on the happy path."""
+    import asyncio
+
+    from bot.services import music
+
+    calls = _stub_backends(monkeypatch, lambda q: "ok")
+    asyncio.run(music._search_with_fallback("some song", {}))
+    assert len(calls) == 1, f"expected one search, got {calls}"
+
+
+def test_genuine_no_results_does_not_fall_back(monkeypatch):
+    """Falling back here would return an unrelated song instead of nothing."""
+    import asyncio
+
+    from bot.services import music
+
+    calls = _stub_backends(monkeypatch, lambda q: "empty")
+    assert asyncio.run(music._search_with_fallback("kjhsdfkjhsdf", {})) is None
+    assert len(calls) == 1, f"should not have tried another backend: {calls}"
+
+
+def test_all_backends_blocked_gives_up_cleanly(monkeypatch):
+    import asyncio
+
+    from bot.services import music
+
+    calls = _stub_backends(monkeypatch, lambda q: "block")
+    assert asyncio.run(music._search_with_fallback("song", {})) is None
+    assert len(calls) == len(music.SEARCH_BACKENDS)
+
+
+def test_search_backends_are_configurable(monkeypatch):
+    import dataclasses
+
+    from bot.services import music
+
+    monkeypatch.setattr(
+        music, "config", dataclasses.replace(music.config, search_backends="soundcloud")
+    )
+    assert music._backends() == (("scsearch", "SoundCloud"),)
+
+    # Nonsense config must not disable search entirely.
+    monkeypatch.setattr(
+        music, "config", dataclasses.replace(music.config, search_backends="nope")
+    )
+    assert music._backends() == music.SEARCH_BACKENDS
+
+
+def test_non_media_links_are_called_out(monkeypatch):
+    """A docs URL pasted into chat should not read as 'song not found'."""
+    from bot.services.music import looks_blocked, looks_unsupported
+
+    err = "ERROR: Unsupported URL: https://render.com/docs/web-services#port-binding"
+    assert looks_unsupported(err)
+    assert not looks_blocked(err)
+    assert not looks_unsupported(_BLOCK_ERROR)
+
+
+def test_polling_clears_a_stale_webhook():
+    """Overlapping deploys and leftover webhooks both cause getUpdates conflicts."""
+    import inspect
+
+    import main
+
+    source = inspect.getsource(main.main)
+    assert "delete_webhook" in source
+    assert "drop_pending_updates=True" in source
+    assert source.index("delete_webhook") < source.index("start_polling")

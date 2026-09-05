@@ -507,6 +507,15 @@ async def main() -> None:
         except Exception as exc:
             logger.warning("Web dashboard failed to start: %s", exc)
 
+    # A redeploy overlaps the old instance with the new one for a few seconds,
+    # and any leftover webhook competes with polling outright. Both surface as
+    # TelegramConflictError; clearing the webhook and dropping the backlog
+    # keeps the new instance from fighting the old one's queued updates.
+    try:
+        await bot.delete_webhook(drop_pending_updates=True)
+    except Exception as exc:
+        logger.warning("Could not clear webhook before polling: %s", exc)
+
     logger.info("%s is live — polling for updates.", config.bot_name)
     try:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())

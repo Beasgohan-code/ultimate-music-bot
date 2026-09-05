@@ -21,6 +21,7 @@ from bot.services.music import (
     is_live_url,
     is_url,
     last_error as music_last_error,
+    looks_unsupported,
     looks_blocked,
     search_youtube,
 )
@@ -153,10 +154,21 @@ async def _resolve_and_play(
     if not track:
         # "No results" and "YouTube blocked this server" look identical to the
         # user but need completely different fixes, so say which one it is.
-        if looks_blocked(music_last_error()):
+        err = music_last_error()
+        if looks_blocked(err):
             await send_card(
                 message,
                 error_card("YouTube refused this request.", BLOCKED_HINT),
+                edit=status,
+            )
+        elif looks_unsupported(err):
+            await send_card(
+                message,
+                error_card(
+                    "That link isn't playable media.",
+                    "It points at a web page, not a song. Send a track link "
+                    "or just the song name.",
+                ),
                 edit=status,
             )
         else:

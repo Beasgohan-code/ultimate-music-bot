@@ -218,6 +218,12 @@ order of effectiveness:
 
 Cookies and proxy apply to streaming, search *and* `/song` downloads.
 
+If YouTube stays blocked, searches automatically fall back to **SoundCloud**,
+which runs on unrelated infrastructure. A smaller catalogue beats a bot that
+can never play anything. The fallback only triggers on a *block* — a genuine
+"no such song" is reported as-is rather than returning an unrelated track from
+another service. Set `SEARCH_BACKENDS=soundcloud` to skip YouTube entirely.
+
 The startup log states what is active, so you never have to guess:
 
 ```

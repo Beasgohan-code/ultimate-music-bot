@@ -183,6 +183,9 @@ class Config:
     # Comma-separated YouTube player clients. Blank uses yt-dlp's defaults plus
     # extra fallbacks; each client is an independent chance past an IP block.
     youtube_clients: str = field(default_factory=lambda: _clean(os.getenv("YOUTUBE_CLIENTS")))
+    # Ordered search backends, e.g. "youtube,soundcloud". Blank tries YouTube
+    # first then SoundCloud, so a YouTube IP block does not kill every search.
+    search_backends: str = field(default_factory=lambda: _clean(os.getenv("SEARCH_BACKENDS")))
 
     # ── Third-party APIs ────────────────────────────────────────────────
     spotify_client_id: str = field(default_factory=lambda: _clean(os.getenv("SPOTIFY_CLIENT_ID")))

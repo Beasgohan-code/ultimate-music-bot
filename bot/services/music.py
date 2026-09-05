@@ -35,6 +35,14 @@ _BLOCK_MARKERS = (
     "this content isn't available",
 )
 
+_UNSUPPORTED_MARKERS = ("unsupported url", "no video formats found", "is not a valid url")
+
+
+def looks_unsupported(error_text: str) -> bool:
+    """True when the link simply is not media — a docs page, an article, etc."""
+    low = (error_text or "").lower()
+    return any(marker in low for marker in _UNSUPPORTED_MARKERS)
+
 
 def _js_runtimes() -> dict[str, dict]:
     """Pick a JavaScript runtime for yt-dlp's YouTube challenge solver.
@@ -260,7 +268,8 @@ def _normalize_entry(entry: dict[str, Any], requester: str = "") -> dict[str, An
 
 
 async def search_youtube(query: str, limit: int = 10) -> list[dict[str, Any]]:
-    info = await _run_ytdl(YDL_SEARCH, f"ytsearch{limit}:{query}")
+    """Search for tracks, falling back to another backend if YouTube blocks."""
+    info = await _search_with_fallback(query, YDL_SEARCH, count=limit)
     if not info:
         return []
     entries = info.get("entries", []) if isinstance(info, dict) else []
@@ -305,6 +314,59 @@ async def get_track(query: str, requester: str = "", video: bool = False) -> dic
     return track
 
 
+#: Search backends tried in order, as (prefix, human name).
+#:
+#: YouTube has by far the best catalogue, so it stays first. But when a host's
+#: IP is blocked, *every* YouTube query fails identically — and a music bot
+#: that can never play anything is worse than one with a smaller library. The
+#: fallbacks live on different infrastructure, so a YouTube block does not
+#: affect them.
+SEARCH_BACKENDS: tuple[tuple[str, str], ...] = (
+    ("ytsearch", "YouTube"),
+    ("scsearch", "SoundCloud"),
+)
+
+
+def _backends() -> tuple[tuple[str, str], ...]:
+    configured = (config.search_backends or "").strip()
+    if not configured:
+        return SEARCH_BACKENDS
+    names = {n.strip().lower() for n in configured.split(",") if n.strip()}
+    picked = tuple(b for b in SEARCH_BACKENDS if b[1].lower() in names or b[0] in names)
+    return picked or SEARCH_BACKENDS
+
+
+async def _search_with_fallback(
+    term: str, opts: dict[str, Any], *, count: int = 1
+) -> dict[str, Any] | None:
+    """Run a search against each backend until one answers.
+
+    Only advances on a *blocked* failure. A genuine "no such song" should not
+    send the query to another service — that would return an unrelated track
+    rather than an honest empty result.
+    """
+    backends = _backends()
+    for index, (prefix, label) in enumerate(backends):
+        info = await _run_ytdl(opts, f"{prefix}{count}:{term}")
+        if info:
+            entries = info.get("entries") if isinstance(info, dict) else None
+            if entries is None or [e for e in entries if e]:
+                if index:
+                    logger.info("Found %r on %s after YouTube failed", term, label)
+                return info
+
+        if not looks_blocked(_last_error):
+            return None
+        if index + 1 < len(backends):
+            logger.warning(
+                "%s blocked for %r — falling back to %s",
+                label,
+                term,
+                backends[index + 1][1],
+            )
+    return None
+
+
 async def get_stream_url(query: str, video: bool = False, live: bool = False) -> dict[str, Any] | None:
     resolved = await resolve_query(query)
     if live:
@@ -314,8 +376,16 @@ async def get_stream_url(query: str, video: bool = False, live: bool = False) ->
     else:
         opts = YDL_AUDIO
 
-    search_query = resolved if is_url(resolved) else f"ytsearch1:{resolved}"
-    info = await _run_ytdl(opts, search_query)
+    if is_url(resolved):
+        info = await _run_ytdl(opts, resolved)
+    else:
+        # Video requests are YouTube-only in practice; the audio fallbacks
+        # have no video catalogue worth searching.
+        info = (
+            await _run_ytdl(opts, f"ytsearch1:{resolved}")
+            if video
+            else await _search_with_fallback(resolved, opts)
+        )
     if not info:
         return None
 
