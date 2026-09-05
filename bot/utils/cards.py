@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from bot.config import config
@@ -25,12 +26,54 @@ def fmt_duration(seconds: int | None) -> str:
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
 
 
+#: Where a track came from, as a badge. Keyed by the lowercased extractor name
+#: so both "Spotify" and "spotify:track" land on the same entry.
+_SOURCES: dict[str, tuple[str, str]] = {
+    "spotify": ("🟢", "Spotify"),
+    "deezer": ("🟣", "Deezer"),
+    "apple": ("🍎", "Apple Music"),
+    "applemusic": ("🍎", "Apple Music"),
+    "soundcloud": ("🟠", "SoundCloud"),
+    "youtube": ("🔴", "YouTube"),
+    "youtubemusic": ("🔴", "YouTube Music"),
+    "bandcamp": ("🔵", "Bandcamp"),
+    "mixcloud": ("🎛", "Mixcloud"),
+    "audiomack": ("🟡", "Audiomack"),
+    "twitch": ("🟪", "Twitch"),
+    "vimeo": ("🎬", "Vimeo"),
+    "telegram": ("📎", "File"),
+    "radio": ("📻", "Radio"),
+}
+
+
+def source_badge(source: str) -> str:
+    """Human label with a colour dot, e.g. "🟢 Spotify"."""
+    key = re.sub(r"[^a-z]", "", str(source or "").lower())
+    for name, (icon, label) in _SOURCES.items():
+        if key.startswith(name):
+            return f"{icon} {label}"
+    return f"🎵 {source or 'Unknown'}"
+
+
 def progress_bar(elapsed: int, duration: int | None, width: int = 14) -> str:
+    """A seek bar that reads cleanly at mobile widths.
+
+    Uses a continuous rule with a knob rather than repeated glyphs, so the bar
+    keeps its shape when Telegram renders it in a proportional font.
+    """
     if not duration:
         return "🔴 LIVE"
     ratio = max(0.0, min(1.0, elapsed / duration))
-    filled = int(ratio * width)
-    return "▬" * filled + "🔘" + "▬" * max(0, width - filled - 1)
+    # The knob occupies one cell, so the track either side totals width - 1.
+    filled = round(ratio * (width - 1))
+    return "━" * filled + "◉" + "─" * (width - 1 - filled)
+
+
+def meter(value: int, total: int = 100, width: int = 10) -> str:
+    """Small block meter for volume and similar 0-100 values."""
+    ratio = max(0.0, min(1.0, (value or 0) / (total or 100)))
+    filled = round(ratio * width)
+    return "▰" * filled + "▱" * (width - filled)
 
 
 def now_playing_card(
@@ -53,34 +96,53 @@ def now_playing_card(
 
     card = RichCard().heading([_icon("▶️"), b("Now Playing")], size=1)
 
+    # Title and artist lead, because that is what people actually look for.
     if track.get("url"):
-        card.para([b(a(title, track["url"]))])
+        card.para([b(a(_clip(title, 72), track["url"]))])
     else:
-        card.para([b(title)])
+        card.para([b(_clip(title, 72))])
     if artist:
-        card.para([i(artist)])
+        card.para([i(_clip(artist, 60))])
 
+    card.blank()
+
+    # The seek bar and timecode belong together, on one line, monospaced so
+    # the digits do not jitter as the position updates.
     if not is_live:
-        card.para([plain(progress_bar(elapsed, duration))])
-        card.para([c(fmt_duration(elapsed)), plain(" / "), c(fmt_duration(duration))])
+        card.para(
+            [
+                c(fmt_duration(elapsed)),
+                plain("  "),
+                plain(progress_bar(elapsed, duration)),
+                plain("  "),
+                c(fmt_duration(duration)),
+            ]
+        )
     else:
-        card.para([plain("🔴 "), b("LIVE")])
+        card.para([plain("🔴  "), b("LIVE"), plain("  ── streaming now")])
 
-    rows: list[list[Any]] = [
-        ["Mode", mode],
-        ["Volume", c(f"{volume}%")],
-        ["Loop", c(loop_mode)],
-    ]
+    # A compact status strip reads better than a six-row table for values
+    # that are mostly one word each.
+    strip: list[Any] = [plain(mode)]
+    if not is_live:
+        strip += [plain("   🔊 "), c(f"{volume}%")]
+    if loop_mode and loop_mode != "off":
+        strip += [plain("   🔁 "), c(loop_mode)]
     if queue_len:
-        rows.append(["Up next", c(f"{queue_len} track(s)")])
-    if track.get("requester"):
-        rows.append(["Requested by", track["requester"]])
-    if position:
-        rows.append(["Queue position", c(f"#{position}")])
-    card.table(["Detail", "Value"], rows)
+        strip += [plain("   📋 "), c(str(queue_len))]
+    card.para(strip)
 
-    source = track.get("source") or "youtube"
-    card.footer(f"Source: {source}  •  {config.bot_name}")
+    if track.get("requester") or position:
+        line: list[Any] = []
+        if track.get("requester"):
+            line += [plain("🙋 "), plain(_clip(track["requester"], 32))]
+        if position:
+            if line:
+                line.append(plain("   "))
+            line += [plain("📍 #"), c(str(position))]
+        card.para(line)
+
+    card.footer(f"{source_badge(track.get('source') or 'youtube')}  •  {config.bot_name}")
     return card
 
 
@@ -88,20 +150,78 @@ def queued_card(track: dict[str, Any], position: int, queue_len: int) -> RichCar
     card = (
         RichCard()
         .heading([_icon("➕"), b("Added to Queue")], size=1)
-        .para([b(track.get("title", "Unknown"))])
+        .para([b(_clip(track.get("title", "Unknown"), 72))])
     )
     if track.get("artist"):
-        card.para([i(track["artist"])])
-    card.table(
-        ["Detail", "Value"],
+        card.para([i(_clip(track["artist"], 60))])
+
+    card.blank()
+    card.para(
         [
-            ["Position", c(f"#{position}")],
-            ["Duration", c(fmt_duration(track.get("duration")))],
-            ["Queue length", c(str(queue_len))],
-            ["Requested by", track.get("requester", "—")],
-        ],
+            plain("📍 Position "),
+            c(f"#{position}"),
+            plain("   ⏱ "),
+            c(fmt_duration(track.get("duration"))),
+            plain("   📋 "),
+            c(f"{queue_len} in queue"),
+        ]
     )
-    card.footer("Use /queue to see everything lined up.")
+    if track.get("requester"):
+        card.para([plain("🙋 "), plain(_clip(track["requester"], 32))])
+
+    card.footer(f"{source_badge(track.get('source') or 'youtube')}  •  /queue to see it all")
+    return card
+
+
+def import_card(resolved: Any, added: int, queued: int = 0) -> RichCard:
+    """Summary for a Spotify / Apple Music / Deezer link that expanded.
+
+    These links carry a whole album or playlist, so the useful feedback is
+    "here is what I found and how much of it I could add", not a single track.
+    """
+    icon = {"spotify": "🟢", "deezer": "🟣", "apple": "🍎"}.get(resolved.platform, "🎵")
+    label = {"spotify": "Spotify", "deezer": "Deezer", "apple": "Apple Music"}.get(
+        resolved.platform, resolved.platform.title()
+    )
+
+    card = RichCard().heading([_icon(icon), b(f"{label} {resolved.kind.title()}")], size=1)
+
+    if resolved.url:
+        card.para([b(a(_clip(resolved.title, 68), resolved.url))])
+    else:
+        card.para([b(_clip(resolved.title, 68))])
+    if resolved.subtitle:
+        card.para([i(_clip(resolved.subtitle, 60))])
+
+    card.blank()
+
+    total = len(resolved.tracks)
+    if total > 1:
+        preview = [
+            f"{idx}. {_clip(t.get('artist', ''), 24)} — {_clip(t.get('title', ''), 38)}"
+            if t.get("artist")
+            else f"{idx}. {_clip(t.get('title', ''), 60)}"
+            for idx, t in enumerate(resolved.tracks[:5], 1)
+        ]
+        card.bullets(preview)
+        if total > 5:
+            card.para([i(f"…and {total - 5} more")])
+        card.blank()
+
+    line: list[Any] = [plain("✅ Added "), c(str(added))]
+    if queued:
+        line += [plain("   📋 Queued "), c(str(queued))]
+    if total > added:
+        line += [plain("   ⚠️ Skipped "), c(str(total - added))]
+    card.para(line)
+
+    if resolved.truncated:
+        card.para([i(f"Only the first {total} tracks were read from this link.")])
+
+    card.footer(
+        f"{icon} {label} audio is DRM-protected, so tracks are matched and streamed "
+        "from YouTube."
+    )
     return card
 
 
@@ -130,11 +250,12 @@ def queue_card(
     chunk = tracks[page * per_page : (page + 1) * per_page]
 
     card.table(
-        ["#", "Track", "Length"],
+        ["#", "Track", "Artist", "Length"],
         [
             [
                 c(str(page * per_page + idx + 1)),
-                t.get("title", "Unknown")[:40],
+                _clip(t.get("title", "Unknown"), 34),
+                _clip(t.get("artist", "—"), 20),
                 c(fmt_duration(t.get("duration"))),
             ]
             for idx, t in enumerate(chunk)
@@ -156,13 +277,18 @@ def search_card(query: str, results: list[dict[str, Any]]) -> RichCard:
         .para([plain("Query: "), c(query)])
     )
     card.table(
-        ["#", "Title", "Length"],
+        ["#", "Title", "Artist", "Length"],
         [
-            [c(str(idx)), r.get("title", "Unknown")[:44], c(fmt_duration(r.get("duration")))]
+            [
+                c(str(idx)),
+                _clip(r.get("title", "Unknown"), 34),
+                _clip(r.get("artist", "—"), 20),
+                c(fmt_duration(r.get("duration"))),
+            ]
             for idx, r in enumerate(results[:10], 1)
         ],
     )
-    card.footer("Tap a button below to play or queue a result.")
+    card.footer("Tap a numbered button below to play or queue a result.")
     return card
 
 
@@ -282,7 +408,7 @@ def welcome_card(
         .details(
             [plain("✦ ┊ "), b("ᴍᴏʀᴇ ᴛʜɪɴɢs ɪ ᴄᴀɴ ᴅᴏ")],
             [
-                "🎧  Stream from YouTube, Spotify, SoundCloud & Apple Music",
+                "🎧  Paste a Spotify, Apple Music or Deezer link — albums and playlists import",
                 "📢  Channel play — stream into a linked channel's voice chat",
                 f"⚡  Inline mode — type {inline_hint} in any chat",
                 "🎭  Mood playlists, smart suggestions & listening history",
@@ -337,7 +463,7 @@ def feature_card(section: str = "overview") -> RichCard:
             )
             .bullets(
                 [
-                    "Sources: YouTube, Spotify, SoundCloud, Apple Music, direct files",
+                    "Sources: YouTube, Spotify, Apple Music, Deezer, SoundCloud, files",
                     "320kbps audio, up to 4K video",
                     "Queue up to 50 tracks with shuffle, move and skip-to",
                     "Per-chat volume, speed and quality settings",

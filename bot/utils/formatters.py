@@ -74,7 +74,7 @@ def welcome_message(bot_name: str = "Ultimate Music Bot") -> str:
     return (
         f"✨ {bold(bot_name)}\n\n"
         f"{bq('Premium Telegram music & video streaming — voice chats, live streams, lyrics, radio, moods, and smart suggestions.')}\n\n"
-        f"🎧 {bold('Audio')} — YouTube, Spotify, SoundCloud, files\n"
+        f"🎧 {bold('Audio')} — YouTube, Spotify, Apple Music, Deezer, SoundCloud\n"
         f"🎬 {bold('Video')} — MKV, MP4, live streams\n"
         f"📻 {bold('Radio')} — 10+ built-in stations\n"
         f"🎭 {bold('Moods')} — Chill, party, workout & more\n"

@@ -427,9 +427,29 @@ def test_progress_bar():
     assert fmt_duration(None) == "—"
     assert fmt_duration(3725) == "1:02:05"
     assert fmt_duration(75) == "1:15"
-    assert progress_bar(0, None) == "🔴 LIVE"
-    bar = progress_bar(50, 100, width=10)
-    assert "🔘" in bar and len(bar.replace("🔘", "")) == 9
+    assert "LIVE" in progress_bar(0, None)
+
+    # Constant width regardless of position, so the card does not reflow as
+    # the track plays.
+    for elapsed in (0, 25, 50, 75, 100):
+        assert len(progress_bar(elapsed, 100, width=10)) == 10
+
+    # The knob has to actually track position, or the bar is decoration.
+    assert progress_bar(0, 100, width=10).index("◉") == 0
+    assert progress_bar(100, 100, width=10).index("◉") == 9
+    assert progress_bar(0, 100, width=10).index("◉") < progress_bar(
+        50, 100, width=10
+    ).index("◉") < progress_bar(100, 100, width=10).index("◉")
+
+    # Out-of-range elapsed values must clamp, not overflow the bar.
+    assert len(progress_bar(-5, 100, width=10)) == 10
+    assert len(progress_bar(9999, 100, width=10)) == 10
+
+    from bot.utils.cards import meter
+
+    assert meter(0, width=10) == "▱" * 10
+    assert meter(100, width=10) == "▰" * 10
+    assert meter(50, width=10).count("▰") == 5
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1412,3 +1432,217 @@ def test_downloads_share_the_streaming_extraction_config():
     assert "materialize_cookies" in source
     assert "_player_clients" in source
     assert "_js_runtimes" in source
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Streaming-platform links (Spotify / Apple Music / Deezer)
+#
+# yt-dlp ships no Spotify extractor, so these links previously failed while
+# the UI advertised support for them. They are resolved to metadata instead
+# and matched against a streamable source.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def test_platform_links_are_detected():
+    from bot.services.platforms import detect
+
+    assert detect("https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT") == "spotify"
+    assert detect("https://open.spotify.com/intl-de/album/1DFixLWuPkv3KT3TnV35m3") == "spotify"
+    assert detect("spotify:playlist:37i9dQZF1DXcBWIGoYBM5M") == "spotify"
+    assert detect("https://www.deezer.com/en/track/3135556") == "deezer"
+    assert detect("https://music.apple.com/us/album/thriller/1440857781") == "apple"
+    assert detect("https://youtube.com/watch?v=dQw4w9WgXcQ") == ""
+    assert detect("") == ""
+
+
+def test_drm_only_services_are_named_not_silently_failed():
+    """Tidal and Amazon have no public metadata, so say so instead of retrying."""
+    from bot.services.platforms import unsupported_service
+
+    assert unsupported_service("https://tidal.com/browse/track/1") == "Tidal"
+    assert unsupported_service("https://music.amazon.com/albums/B01") == "Amazon Music"
+    assert unsupported_service("https://open.spotify.com/track/x") == ""
+
+
+def test_spotify_id_extraction_handles_every_url_shape():
+    from bot.services.platforms import _SPOTIFY_RE
+
+    cases = [
+        ("https://open.spotify.com/track/4cOdK2", "track", "4cOdK2"),
+        ("https://open.spotify.com/intl-de/album/1DFix", "album", "1DFix"),
+        ("spotify:playlist:37i9dQ", "playlist", "37i9dQ"),
+        ("https://open.spotify.com/artist/1dfeR4H?si=abc", "artist", "1dfeR4H"),
+    ]
+    for url, kind, ident in cases:
+        m = _SPOTIFY_RE.search(url)
+        assert m, f"no match for {url}"
+        assert (m.group(1) or m.group(2)).lower() == kind
+        assert m.group(3) == ident
+
+
+def test_resolved_builds_searchable_queries():
+    from bot.services.platforms import Resolved
+
+    r = Resolved(
+        platform="spotify",
+        kind="album",
+        tracks=[
+            {"title": "Bohemian Rhapsody", "artist": "Queen"},
+            {"title": "Instrumental", "artist": ""},
+            {"title": "", "artist": "Nobody"},
+        ],
+    )
+    queries = r.queries()
+    assert queries[0] == "Queen - Bohemian Rhapsody"
+    assert queries[1] == "Instrumental"  # no artist, no dangling dash
+    assert len(queries) == 2  # the titleless row is dropped
+
+
+def test_platform_resolution_never_raises(monkeypatch):
+    """A bad link must not take down the handler."""
+    import asyncio
+
+    from bot.services import platforms
+
+    async def boom(*a, **k):
+        raise RuntimeError("network on fire")
+
+    monkeypatch.setitem(platforms._RESOLVERS, "spotify", boom)
+    platforms.clear_cache()
+    assert asyncio.run(platforms.resolve("https://open.spotify.com/track/x")) is None
+
+
+def test_resolve_query_uses_platform_metadata(monkeypatch):
+    """A Spotify URL must become "Artist - Title", not be passed to yt-dlp."""
+    import asyncio
+
+    from bot.services import music, platforms
+
+    async def fake_resolve(url):
+        return platforms.Resolved(
+            platform="spotify",
+            kind="track",
+            tracks=[{"title": "Kill Bill", "artist": "SZA"}],
+        )
+
+    monkeypatch.setattr(platforms, "resolve", fake_resolve)
+    out = asyncio.run(music.resolve_query("https://open.spotify.com/track/x"))
+    assert out == "SZA - Kill Bill"
+
+    # Non-platform queries pass through untouched.
+    assert asyncio.run(music.resolve_query("just a song name")) == "just a song name"
+
+
+def test_source_badges_are_recognisable():
+    from bot.utils.cards import source_badge
+
+    assert "Spotify" in source_badge("Spotify")
+    assert "Spotify" in source_badge("spotify:track")
+    assert "Apple Music" in source_badge("AppleMusic")
+    assert "SoundCloud" in source_badge("soundcloud")
+    assert "YouTube" in source_badge("Youtube")
+    # Unknown sources still render something sane rather than blowing up.
+    assert source_badge("wat") and source_badge("") 
+
+
+def test_import_card_reports_what_actually_happened():
+    from bot.services.platforms import Resolved
+    from bot.utils.cards import import_card
+
+    resolved = Resolved(
+        platform="spotify",
+        kind="playlist",
+        title="Today's Top Hits",
+        subtitle="Spotify",
+        tracks=[{"title": f"Song {n}", "artist": "Artist"} for n in range(8)],
+        truncated=True,
+    )
+    html = import_card(resolved, added=6, queued=5).to_html()
+    assert "Today&#x27;s Top Hits" in html or "Today's Top Hits" in html
+    assert "Spotify" in html
+    assert "6" in html and "5" in html
+    assert "2" in html  # 8 found, 6 added -> 2 skipped
+    assert "first" in html.lower()  # truncation is disclosed
+
+
+def test_now_playing_card_shows_source_and_position():
+    from bot.utils.cards import now_playing_card
+
+    html = now_playing_card(
+        {
+            "title": "Bohemian Rhapsody",
+            "artist": "Queen",
+            "duration": 354,
+            "source": "Spotify",
+            "requester": "Arjun",
+        },
+        elapsed=127,
+        queue_len=4,
+        volume=80,
+        loop_mode="all",
+    ).to_html()
+
+    assert "Bohemian Rhapsody" in html
+    assert "Spotify" in html  # badge, not a bare extractor key
+    assert "2:07" in html and "5:54" in html
+    assert "◉" in html
+    assert "Arjun" in html
+
+
+def test_live_tracks_have_no_fake_progress_bar():
+    from bot.utils.cards import now_playing_card
+
+    html = now_playing_card(
+        {"title": "Lofi Radio", "is_live": True, "source": "radio"}
+    ).to_html()
+    assert "LIVE" in html
+    assert "◉" not in html  # a seek bar on a live stream is a lie
+
+
+def test_every_keyboard_button_has_a_handler():
+    """A button that does nothing when tapped is worse than no button."""
+    import re
+
+    root = Path(__file__).resolve().parent.parent
+    emitted: set[str] = set()
+    for path in (root / "bot" / "keyboards").glob("*.py"):
+        emitted |= set(re.findall(r'callback_data="([a-z_]+:[a-z_]+)"', path.read_text()))
+
+    exact: set[str] = set()
+    prefixes: set[str] = set()
+    for path in (root / "bot" / "handlers").glob("*.py"):
+        text = path.read_text()
+        exact |= set(re.findall(r'F\.data == "([^"]+)"', text))
+        prefixes |= set(re.findall(r'F\.data\.startswith\("([^"]+)"\)', text))
+
+    dead = {
+        data
+        for data in emitted
+        if data not in exact and not any(data.startswith(p) for p in prefixes)
+    }
+    assert not dead, f"buttons with no handler: {sorted(dead)}"
+    assert emitted, "no callback buttons found — the scan is broken"
+
+
+def test_player_panel_stays_thumb_sized():
+    """The transport panel used to be 14 buttons over 5 rows."""
+    from bot.keyboards.inline import player_more_kb, player_panel_kb
+
+    rows = player_panel_kb(is_playing=True).inline_keyboard
+    assert len(rows) <= 3, "player panel grew back into a wall of buttons"
+    assert all(len(r) <= 4 for r in rows), "a row is too wide for a phone"
+
+    # Everything moved off the main panel must still be reachable.
+    more = {b.callback_data for r in player_more_kb().inline_keyboard for b in r}
+    assert {"ctrl:video", "ctrl:live", "ctrl:clear", "ctrl:suggest"} <= more
+    assert "ctrl:back" in more, "no way back from the More panel"
+
+
+def test_search_keyboard_is_compact():
+    from bot.keyboards.inline import search_results_kb
+
+    results = [{"id": f"v{n}", "title": f"A very long song title {n}", "duration": 200} for n in range(8)]
+    rows = search_results_kb(results).inline_keyboard
+    picker = [r for r in rows if r and (r[0].callback_data or "").startswith("play:")]
+    assert all(len(r) <= 4 for r in picker), "picker rows too wide"
+    assert sum(len(r) for r in picker) == 8, "results went missing"

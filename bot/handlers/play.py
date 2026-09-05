@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import tempfile
@@ -12,6 +13,7 @@ from aiogram.types import Message
 
 from bot.keyboards.inline import player_panel_kb, search_results_kb
 from bot.config import config
+from bot.services import platforms
 from bot.services.autoleave import auto_leave
 from bot.services.music import (
     BLOCKED_HINT,
@@ -27,6 +29,7 @@ from bot.services.stream import stream_manager
 from bot.utils.helpers import ensure_assistant_in_chat, extract_query, is_group_chat, reply_error
 from bot.utils.cards import (
     error_card,
+    import_card,
     now_playing_card,
     search_card,
     success_card,
@@ -37,6 +40,98 @@ from bot.utils.rich import send_card, send_html
 
 logger = logging.getLogger(__name__)
 router = Router(name="play")
+
+
+async def _import_platform_link(message: Message, query: str, *, video: bool, status) -> bool:
+    """Handle a Spotify / Apple Music / Deezer link. True when handled.
+
+    A single track just becomes a normal search. An album or playlist is worth
+    expanding: play the first track and queue the rest, so pasting a playlist
+    link does the obvious thing instead of playing one song from it.
+    """
+    if not platforms.detect(query):
+        blocked = platforms.unsupported_service(query)
+        if blocked:
+            await send_card(
+                message,
+                error_card(
+                    f"{blocked} links can't be played.",
+                    "Its audio is DRM-locked with no public metadata. "
+                    "Paste a Spotify, Apple Music, Deezer or YouTube link, "
+                    "or just send the song name.",
+                ),
+                edit=status,
+            )
+            return True
+        return False
+
+    resolved = await platforms.resolve(query)
+    if not resolved:
+        await send_card(
+            message,
+            error_card(
+                "That link could not be read.",
+                "It may be private, region-locked, or a format I don't know yet.",
+            ),
+            edit=status,
+        )
+        return True
+
+    queries = resolved.queries()
+    if resolved.is_single and len(queries) == 1:
+        return False  # fall through: resolve_query() turns it into a search
+
+    await status.edit_text(
+        f"⏳ <b>Importing {len(queries)} tracks…</b>", parse_mode="HTML"
+    )
+
+    first = await get_stream_url(queries[0], video=video)
+    if not first:
+        await send_card(
+            message,
+            error_card(
+                "Couldn't find the first track anywhere.",
+                "The rest of the list was not imported.",
+            ),
+            edit=status,
+        )
+        return True
+
+    # Carry the original artwork through — YouTube's thumbnail for a matched
+    # track is often a random video still, the album art is better.
+    if resolved.tracks and resolved.tracks[0].get("artwork"):
+        first["thumbnail"] = resolved.tracks[0]["artwork"]
+    first["source"] = resolved.platform
+
+    started = await play_track(message, first, edit_msg=status)
+    if not started:
+        return True
+
+    # Resolve the rest concurrently, but stay polite to the extractor.
+    queued = 0
+    semaphore = asyncio.Semaphore(4)
+
+    async def _add(idx: int, term: str) -> None:
+        nonlocal queued
+        async with semaphore:
+            track = await get_stream_url(term, video=video)
+        if not track:
+            return
+        meta = resolved.tracks[idx] if idx < len(resolved.tracks) else {}
+        if meta.get("artwork"):
+            track["thumbnail"] = meta["artwork"]
+        track["source"] = resolved.platform
+        track["requester"] = message.from_user.full_name if message.from_user else ""
+        try:
+            await queue_manager.add(message.chat.id, track)
+            queued += 1
+        except ValueError:
+            pass  # queue full — the card reports the shortfall
+
+    await asyncio.gather(*(_add(i, q) for i, q in enumerate(queries[1:], start=1)))
+
+    await send_card(message, import_card(resolved, added=1 + queued, queued=queued))
+    return True
 
 
 async def _resolve_and_play(
@@ -50,6 +145,10 @@ async def _resolve_and_play(
     if not await can_play(message):
         return
     status = await message.answer("⏳ <b>Loading media…</b>", parse_mode="HTML")
+
+    if not live and await _import_platform_link(message, query, video=video, status=status):
+        return
+
     track = await get_stream_url(query, video=video, live=live)
     if not track:
         # "No results" and "YouTube blocked this server" look identical to the

@@ -189,6 +189,11 @@ class Config:
     spotify_client_secret: str = field(
         default_factory=lambda: _clean(os.getenv("SPOTIFY_CLIENT_SECRET"))
     )
+    # Storefront for artist top-tracks; also affects which regional catalogue
+    # a track resolves to.
+    spotify_market: str = field(
+        default_factory=lambda: _clean(os.getenv("SPOTIFY_MARKET")) or "US"
+    )
     genius_api_token: str = field(default_factory=lambda: _clean(os.getenv("GENIUS_API_TOKEN")))
 
     # ── Web dashboard / health server ───────────────────────────────────

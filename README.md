@@ -176,6 +176,33 @@ the symbols py-tgcalls needs, and locates or installs FFmpeg. A misconfigured
 dependency produces an explicit message with the fix, rather than a traceback
 from deep inside a library.
 
+## Music sources
+
+Paste a link from any of these and the bot works out what to do:
+
+| Source | Tracks | Albums / playlists | Notes |
+|---|---|---|---|
+| YouTube / YT Music | ✅ | ✅ | Streamed directly |
+| SoundCloud, Bandcamp, Vimeo, Twitch | ✅ | ✅ | Streamed directly |
+| **Spotify** | ✅ | ✅ | Metadata read, audio matched on YouTube |
+| **Apple Music** | ✅ | ✅ albums | Via the public iTunes API |
+| **Deezer** | ✅ | ✅ | Fully public API, no key needed |
+| Direct URLs, m3u8, uploaded files | ✅ | — | Played as-is |
+
+Spotify, Apple Music and Deezer stream DRM-protected audio, so **nothing** can
+download the file itself — yt-dlp ships no Spotify extractor at all. What these
+links *do* carry is metadata, so the bot reads the title and artist and matches
+the recording on a streamable source. Paste an album or playlist link and it
+plays the first track and queues the rest.
+
+Deezer and Apple Music need no credentials. Spotify works without them too, via
+the public oEmbed endpoint, but that only returns one title per link — set
+`SPOTIFY_CLIENT_ID` / `SPOTIFY_CLIENT_SECRET` to expand full albums and
+playlists.
+
+Tidal and Amazon Music expose no public metadata, so the bot says so plainly
+rather than failing with a generic error.
+
 ## When YouTube blocks your server
 
 Cloud IPs get flagged, and then extraction fails for every query. The bot

@@ -159,51 +159,92 @@ def main_menu_kb() -> InlineKeyboardMarkup:
 
 
 def player_panel_kb(is_playing: bool = False, is_paused: bool = False) -> InlineKeyboardMarkup:
-    play_pause = "▶️ Resume" if is_paused else ("⏸ Pause" if is_playing else "▶️ Play")
+    """Transport controls for the now-playing card.
+
+    Fourteen buttons in five rows read as a wall of text on a phone. The
+    controls people press constantly (skip, pause, volume) get the top rows as
+    bare glyphs — universally understood and easy to hit — and the rest moves
+    behind a single "More" row.
+    """
+    play_pause = "▶️" if is_paused else "⏸"
     play_data = "ctrl:resume" if is_paused else "ctrl:pause"
 
     return InlineKeyboardMarkup(
         inline_keyboard=[
+            # Transport, in the order a physical player has them.
             [
-                InlineKeyboardButton(text="⏮ Replay", callback_data="ctrl:replay"),
-                InlineKeyboardButton(text=play_pause, callback_data=play_data, style=ButtonStyle.PRIMARY),
-                InlineKeyboardButton(text="⏭ Skip", callback_data="ctrl:skip", style=ButtonStyle.PRIMARY),
+                InlineKeyboardButton(text="⏮", callback_data="ctrl:replay"),
+                InlineKeyboardButton(
+                    text=play_pause, callback_data=play_data, style=ButtonStyle.PRIMARY
+                ),
+                InlineKeyboardButton(
+                    text="⏭", callback_data="ctrl:skip", style=ButtonStyle.PRIMARY
+                ),
+                InlineKeyboardButton(
+                    text="⏹", callback_data="ctrl:stop", style=ButtonStyle.DANGER
+                ),
             ],
             [
-                InlineKeyboardButton(text="⏹ Stop", callback_data="ctrl:stop", style=ButtonStyle.DANGER),
-                InlineKeyboardButton(text="🔁 Loop", callback_data="ctrl:loop"),
-                InlineKeyboardButton(text="🔀 Shuffle", callback_data="ctrl:shuffle"),
+                InlineKeyboardButton(text="🔉", callback_data="ctrl:vol_down"),
+                InlineKeyboardButton(text="🔊", callback_data="ctrl:vol_up"),
+                InlineKeyboardButton(text="🔁", callback_data="ctrl:loop"),
+                InlineKeyboardButton(text="🔀", callback_data="ctrl:shuffle"),
             ],
             [
-                InlineKeyboardButton(text="🔉 Vol -", callback_data="ctrl:vol_down"),
-                InlineKeyboardButton(text="🔊 Vol +", callback_data="ctrl:vol_up"),
-                InlineKeyboardButton(text="🗑 Clear", callback_data="ctrl:clear"),
-            ],
-            [
-                InlineKeyboardButton(text="📋 Queue", callback_data="ctrl:queue"),
-                InlineKeyboardButton(text="📝 Lyrics", callback_data="ctrl:lyrics"),
-                InlineKeyboardButton(text="💡 Suggest", callback_data="ctrl:suggest"),
-            ],
-            [
-                InlineKeyboardButton(text="🎬 Video Mode", callback_data="ctrl:video"),
-                InlineKeyboardButton(text="📡 Live Stream", callback_data="ctrl:live"),
+                InlineKeyboardButton(text="📋 ǫᴜᴇᴜᴇ", callback_data="ctrl:queue"),
+                InlineKeyboardButton(text="📝 ʟʏʀɪᴄs", callback_data="ctrl:lyrics"),
+                InlineKeyboardButton(text="⋯ ᴍᴏʀᴇ", callback_data="ctrl:more"),
             ],
         ]
     )
 
 
+def player_more_kb() -> InlineKeyboardMarkup:
+    """Secondary player actions, behind the ⋯ More button."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="💡 sᴜɢɢᴇsᴛ", callback_data="ctrl:suggest"),
+                InlineKeyboardButton(text="⭐ ꜰᴀᴠᴏᴜʀɪᴛᴇ", callback_data="ctrl:fav"),
+            ],
+            [
+                InlineKeyboardButton(text="🎬 ᴠɪᴅᴇᴏ", callback_data="ctrl:video"),
+                InlineKeyboardButton(text="📡 ʟɪᴠᴇ", callback_data="ctrl:live"),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🗑 ᴄʟᴇᴀʀ ǫᴜᴇᴜᴇ",
+                    callback_data="ctrl:clear",
+                    style=ButtonStyle.DANGER,
+                ),
+            ],
+            [InlineKeyboardButton(text="◂ ʙᴀᴄᴋ", callback_data="ctrl:back")],
+        ]
+    )
+
+
 def search_results_kb(results: list[dict], prefix: str = "play") -> InlineKeyboardMarkup:
-    buttons = []
+    """Numbered picker for search results.
+
+    One full-width button per result pushed the list off screen and truncated
+    the titles anyway — the card above already shows them. Numbers in rows of
+    four keep the whole result set visible and thumb-reachable.
+    """
+    buttons: list[list[InlineKeyboardButton]] = []
+    row: list[InlineKeyboardButton] = []
     for i, r in enumerate(results[:8]):
-        title = r.get("title", "?")[:40]
-        dur = format_duration(r.get("duration"))
-        buttons.append([
+        row.append(
             InlineKeyboardButton(
-                text=f"{i + 1}. {title} ({dur})",
+                text=f"{i + 1}",
                 callback_data=f"{prefix}:{r.get('id', i)}",
                 style=ButtonStyle.PRIMARY if i == 0 else None,
             )
-        ])
+        )
+        if len(row) == 4:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
     buttons.append([
         InlineKeyboardButton(text="❌ Cancel", callback_data="ctrl:cancel", style=ButtonStyle.DANGER),
     ])

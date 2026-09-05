@@ -268,16 +268,21 @@ async def search_youtube(query: str, limit: int = 10) -> list[dict[str, Any]]:
 
 
 async def resolve_query(query: str) -> str:
-    """Resolve Spotify and other URLs to searchable queries."""
-    if "open.spotify.com/track/" in query or "spotify:track:" in query:
-        info = await _run_ytdl({**YDL_OPTS_BASE, "skip_download": True}, query)
-        if info and isinstance(info, dict):
-            title = info.get("title", "")
-            artist = info.get("artist") or info.get("uploader") or ""
-            if title:
-                return f"{artist} {title}".strip() if artist else title
-    if "open.spotify.com/playlist/" in query:
-        return query
+    """Turn a streaming-service link into something searchable.
+
+    Spotify, Apple Music and Deezer serve DRM-protected audio — yt-dlp has no
+    Spotify extractor at all, so feeding it a Spotify URL simply fails. Read
+    the metadata off the link instead and hand back "Artist - Title", which
+    the normal YouTube search path can find.
+    """
+    from bot.services import platforms
+
+    if platforms.detect(query):
+        resolved = await platforms.resolve(query)
+        if resolved:
+            queries = resolved.queries()
+            if queries:
+                return queries[0]
     return query
 
 

@@ -7,7 +7,8 @@ import logging
 from aiogram import F, Router
 from aiogram.types import CallbackQuery, Message
 
-from bot.keyboards.inline import player_panel_kb, queue_pagination_kb
+from bot.keyboards.inline import player_more_kb, player_panel_kb, queue_pagination_kb
+from bot.services.favorites import favorites_store
 from bot.services.music import get_stream_url
 from bot.services.queue import queue_manager
 from bot.services.stream import stream_manager
@@ -247,6 +248,53 @@ async def cb_suggest(query: CallbackQuery) -> None:
         reply_markup=suggestions_kb(suggestions),
     )
     await query.answer()
+
+
+@router.callback_query(F.data == "ctrl:more")
+async def cb_more(query: CallbackQuery) -> None:
+    """Swap the transport row for the secondary actions."""
+    try:
+        await query.message.edit_reply_markup(reply_markup=player_more_kb())
+    except Exception:
+        pass
+    await query.answer()
+
+
+@router.callback_query(F.data == "ctrl:back")
+async def cb_back(query: CallbackQuery) -> None:
+    """Return from the ⋯ More panel to the transport controls."""
+    chat_id = query.message.chat.id
+    try:
+        await query.message.edit_reply_markup(
+            reply_markup=player_panel_kb(
+                stream_manager.is_playing(chat_id),
+                stream_manager.is_paused(chat_id),
+            )
+        )
+    except Exception:
+        pass
+    await query.answer()
+
+
+@router.callback_query(F.data == "ctrl:fav")
+async def cb_favourite(query: CallbackQuery) -> None:
+    """Save the current track to the tapping user's favourites."""
+    current = await queue_manager.get_current(query.message.chat.id)
+    if not current:
+        await query.answer("Nothing playing", show_alert=True)
+        return
+
+    user_id = query.from_user.id if query.from_user else 0
+    if not user_id:
+        await query.answer("Could not identify you", show_alert=True)
+        return
+
+    added = await favorites_store.add(user_id, current)
+    title = current.get("title", "this track")[:40]
+    await query.answer(
+        f"⭐ Saved {title}" if added else "Already in your favourites",
+        show_alert=not added,
+    )
 
 
 @router.callback_query(F.data == "ctrl:cancel")
