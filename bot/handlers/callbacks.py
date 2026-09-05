@@ -250,6 +250,22 @@ async def cb_suggest(query: CallbackQuery) -> None:
     await query.answer()
 
 
+@router.callback_query(F.data == "ctrl:noop")
+async def cb_noop(query: CallbackQuery) -> None:
+    """The progress bar is a label, not a control.
+
+    Telegram shows a spinner until a callback is answered, so an unhandled
+    tap looks like the bot froze. Answering with the timestamp turns a stray
+    press into something mildly useful.
+    """
+    text = ""
+    if query.message and query.message.reply_markup:
+        rows = query.message.reply_markup.inline_keyboard
+        if rows and len(rows[0]) == 1:
+            text = rows[0][0].text
+    await query.answer(text or "Playback progress")
+
+
 @router.callback_query(F.data == "ctrl:more")
 async def cb_more(query: CallbackQuery) -> None:
     """Swap the transport row for the secondary actions."""

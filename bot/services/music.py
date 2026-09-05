@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import http.cookiejar
 import binascii
 import logging
 import os
+import random
+import time
 import re
 import shutil
 from typing import Any
@@ -129,6 +132,148 @@ def materialize_cookies() -> str:
         return ""
 
 
+#: Cookies that actually carry a YouTube login. A jar without at least one of
+#: these authenticates as nobody, however many lines it has.
+_AUTH_COOKIES = {"SID", "__Secure-1PSID", "__Secure-3PSID", "LOGIN_INFO"}
+
+
+def inspect_cookies(path: str) -> dict[str, Any]:
+    """Report whether a cookie jar is actually usable.
+
+    An expired jar is worse than none: yt-dlp drops the dead entries, sends
+    the request unauthenticated, and the failure looks identical to having no
+    cookies at all. Checking up front turns a mystery into a message.
+    """
+    info: dict[str, Any] = {
+        "path": path,
+        "exists": False,
+        "total": 0,
+        "live": 0,
+        "expired": 0,
+        "authenticated": False,
+        "next_expiry": None,
+        "problem": "",
+    }
+    if not path or not os.path.isfile(path):
+        info["problem"] = "no cookie file"
+        return info
+    info["exists"] = True
+
+    try:
+        jar = http.cookiejar.MozillaCookieJar(path)
+        # ignore_expires so we can *count* the dead ones rather than silently
+        # dropping them the way a plain load() would.
+        jar.load(ignore_discard=True, ignore_expires=True)
+    except Exception as exc:
+        info["problem"] = f"unreadable ({type(exc).__name__})"
+        return info
+
+    now = time.time()
+    live_names: set[str] = set()
+    expiries: list[float] = []
+    for cookie in jar:
+        info["total"] += 1
+        if cookie.expires and cookie.expires <= now:
+            info["expired"] += 1
+            continue
+        info["live"] += 1
+        live_names.add(cookie.name)
+        if cookie.expires:
+            expiries.append(cookie.expires)
+
+    info["authenticated"] = bool(live_names & _AUTH_COOKIES)
+    if expiries:
+        info["next_expiry"] = min(expiries)
+
+    if not info["total"]:
+        info["problem"] = "file has no cookies"
+    elif not info["live"]:
+        info["problem"] = "every cookie has expired"
+    elif not info["authenticated"]:
+        info["problem"] = "no login cookies (SID / LOGIN_INFO) — not signed in"
+    return info
+
+
+def cookie_pool() -> list[str]:
+    """Every usable cookie jar, newest-checked first.
+
+    Rotating across several accounts spreads the load so one jar does not get
+    rate-limited on its own — the idea comes from DAXXMUSIC, which picks a
+    random file from a cookies/ directory. Unusable jars are filtered out
+    here rather than picked blindly: an expired file is not a fallback, it is
+    a silent failure.
+    """
+    paths: list[str] = []
+
+    single = materialize_cookies()
+    if single:
+        paths.append(single)
+
+    directory = (config.cookies_dir or "").strip()
+    if directory and os.path.isdir(directory):
+        for name in sorted(os.listdir(directory)):
+            if name.endswith(".txt"):
+                full = os.path.join(directory, name)
+                if full not in paths:
+                    paths.append(full)
+
+    # Keep anything with at least one live cookie. A jar without a login is
+    # weaker but still useful (consent/region cookies), so it is warned about
+    # at startup rather than discarded here. Fully expired jars are useless.
+    return [p for p in paths if inspect_cookies(p)["live"]]
+
+
+def pick_cookie_file() -> str:
+    """Choose a cookie jar for one request, rotating when several work."""
+    usable = cookie_pool()
+    if not usable:
+        return ""
+    if len(usable) == 1:
+        return usable[0]
+    return random.choice(usable)
+
+
+def cookie_status() -> str:
+    """One-line summary for the startup banner.
+
+    Says plainly when a jar exists but cannot work. An expired file behaves
+    exactly like no file at all, and that ambiguity costs hours to debug.
+    """
+    candidates: list[str] = []
+    single = materialize_cookies()
+    if single:
+        candidates.append(single)
+    directory = (config.cookies_dir or "").strip()
+    if directory and os.path.isdir(directory):
+        candidates += [
+            os.path.join(directory, n)
+            for n in sorted(os.listdir(directory))
+            if n.endswith(".txt")
+        ]
+
+    if not candidates:
+        return "none"
+
+    reports = [(p, inspect_cookies(p)) for p in candidates]
+    usable = [(p, i) for p, i in reports if not i["problem"]]
+    if not usable:
+        # Report the first real reason rather than a generic failure.
+        reason = next((i["problem"] for _, i in reports if i["problem"]), "unusable")
+        return f"PRESENT BUT UNUSABLE — {reason}"
+
+    soonest = min(
+        (i["next_expiry"] for _, i in usable if i["next_expiry"]), default=None
+    )
+    when = ""
+    if soonest:
+        when = f", first expires in {int((soonest - time.time()) // 86400)}d"
+    rejected = len(reports) - len(usable)
+    extra = f", {rejected} rejected" if rejected else ""
+    if len(usable) > 1:
+        return f"loaded ({len(usable)} jars rotating{when}{extra})"
+    return f"loaded ({usable[0][1]['live']} cookies, signed in{when}{extra})"
+
+
 def _ydl_common() -> dict[str, Any]:
     """Options every extraction shares: auth, proxy, JS runtime, clients."""
     opts: dict[str, Any] = {}
@@ -144,7 +289,7 @@ def _ydl_common() -> dict[str, Any]:
     # Cookies from a logged-in account are the single most effective way past
     # a datacenter-IP block. These were already read from the environment but
     # only ever applied to /song downloads, never to streaming or search.
-    cookies = materialize_cookies()
+    cookies = pick_cookie_file()
     if cookies:
         opts["cookiefile"] = cookies
     if config.ytdlp_proxy:

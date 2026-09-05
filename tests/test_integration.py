@@ -1221,8 +1221,14 @@ def test_streaming_extraction_applies_cookies_and_proxy(monkeypatch, tmp_path):
 
     from bot.services import music
 
+    import time
+
     cookies = tmp_path / "cookies.txt"
-    cookies.write_text("# Netscape HTTP Cookie File\n")
+    expires = int(time.time()) + 90 * 86400
+    cookies.write_text(
+        "# Netscape HTTP Cookie File\n"
+        f".youtube.com\tTRUE\t/\tFALSE\t{expires}\tSID\tvalue\n"
+    )
 
     monkeypatch.setattr(
         music,
@@ -2067,3 +2073,187 @@ def test_teardown_is_silent():
     source = inspect.getsource(play.on_video_chat_ended)
     for noisy in ("message.answer", "send_card", "message.reply"):
         assert noisy not in source, f"teardown should not post: {noisy}"
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Cookie validation
+#
+# An expired jar behaves exactly like no jar: yt-dlp drops the dead entries
+# and sends the request unauthenticated. Saying so up front turns a silent
+# failure into a fixable message.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def _write_jar(tmp_path, name, *, expires, login=True):
+    lines = ["# Netscape HTTP Cookie File"]
+    if login:
+        lines.append(f".youtube.com\tTRUE\t/\tFALSE\t{expires}\tSID\tv-{name}")
+        lines.append(f".youtube.com\tTRUE\t/\tTRUE\t{expires}\tLOGIN_INFO\tv-{name}")
+    lines.append(f".youtube.com\tTRUE\t/\tTRUE\t{expires}\tPREF\tx")
+    path = tmp_path / name
+    path.write_text("\n".join(lines) + "\n")
+    return str(path)
+
+
+def _future():
+    import time
+
+    return int(time.time()) + 90 * 86400
+
+
+def _past():
+    import time
+
+    return int(time.time()) - 10 * 86400
+
+
+def test_expired_cookie_jar_is_reported_not_ignored(tmp_path):
+    from bot.services.music import inspect_cookies
+
+    info = inspect_cookies(_write_jar(tmp_path, "dead.txt", expires=_past()))
+    assert info["expired"] == 3
+    assert info["live"] == 0
+    assert info["problem"], "an unusable jar must explain itself"
+
+
+def test_jar_without_login_cookies_is_rejected(tmp_path):
+    """A jar of tracking cookies authenticates as nobody."""
+    from bot.services.music import inspect_cookies
+
+    info = inspect_cookies(_write_jar(tmp_path, "anon.txt", expires=_future(), login=False))
+    assert info["live"] > 0, "cookies are live…"
+    assert not info["authenticated"], "…but none of them is a login"
+    assert "not signed in" in info["problem"]
+
+
+def test_good_cookie_jar_passes(tmp_path):
+    from bot.services.music import inspect_cookies
+
+    info = inspect_cookies(_write_jar(tmp_path, "good.txt", expires=_future()))
+    assert info["authenticated"]
+    assert not info["problem"]
+    assert info["next_expiry"]
+
+
+def test_missing_and_corrupt_files_do_not_raise(tmp_path):
+    from bot.services.music import inspect_cookies
+
+    assert inspect_cookies("")["problem"]
+    assert inspect_cookies(str(tmp_path / "nope.txt"))["problem"]
+
+    junk = tmp_path / "junk.txt"
+    junk.write_text("this is not a cookie file at all\n")
+    assert inspect_cookies(str(junk))["problem"]
+
+
+def test_cookie_pool_skips_unusable_jars(tmp_path, monkeypatch):
+    import dataclasses
+
+    from bot.services import music
+
+    _write_jar(tmp_path, "a.txt", expires=_future())
+    _write_jar(tmp_path, "b.txt", expires=_future())
+    _write_jar(tmp_path, "expired.txt", expires=_past())
+    _write_jar(tmp_path, "anon.txt", expires=_future(), login=False)
+
+    monkeypatch.setattr(
+        music,
+        "config",
+        dataclasses.replace(
+            music.config, cookies_dir=str(tmp_path), cookies_file="", cookies_data=""
+        ),
+    )
+    pool = [p.rsplit("/", 1)[-1] for p in music.cookie_pool()]
+    # anon.txt has live cookies but no login: weaker, still usable, so kept.
+    # expired.txt has nothing live at all, so it is dropped.
+    assert "expired.txt" not in pool
+    assert {"a.txt", "b.txt"} <= set(pool)
+
+
+def test_cookie_pool_rotates_between_accounts(tmp_path, monkeypatch):
+    """One jar carrying every request is what gets an account rate-limited."""
+    import dataclasses
+
+    from bot.services import music
+
+    _write_jar(tmp_path, "a.txt", expires=_future())
+    _write_jar(tmp_path, "b.txt", expires=_future())
+    monkeypatch.setattr(
+        music,
+        "config",
+        dataclasses.replace(
+            music.config, cookies_dir=str(tmp_path), cookies_file="", cookies_data=""
+        ),
+    )
+
+    seen = {music.pick_cookie_file().rsplit("/", 1)[-1] for _ in range(60)}
+    assert seen == {"a.txt", "b.txt"}, f"expected rotation, saw {seen}"
+
+
+def test_cookie_status_distinguishes_none_from_broken(tmp_path, monkeypatch):
+    import dataclasses
+
+    from bot.services import music
+
+    def status(**kw):
+        fields = dict(cookies_file="", cookies_data="", cookies_dir="")
+        fields.update(kw)
+        monkeypatch.setattr(
+            music, "config", dataclasses.replace(music.config, **fields)
+        )
+        return music.cookie_status()
+
+    assert status() == "none"
+
+    dead = _write_jar(tmp_path, "dead.txt", expires=_past())
+    assert "UNUSABLE" in status(cookies_file=dead)
+
+    good = _write_jar(tmp_path, "good.txt", expires=_future())
+    assert status(cookies_file=good).startswith("loaded")
+
+
+def test_extraction_uses_the_pool_not_a_single_file():
+    import inspect
+
+    from bot.services import music
+
+    source = inspect.getsource(music._ydl_common)
+    assert "pick_cookie_file()" in source, "must rotate, not always use one jar"
+
+
+def test_player_shows_a_progress_row_when_duration_is_known():
+    from bot.keyboards.inline import player_panel_kb
+
+    kb = player_panel_kb(True, False, elapsed=127, duration=354)
+    top = kb.inline_keyboard[0]
+    assert len(top) == 1, "progress row should span the panel"
+    assert "2:07" in top[0].text and "5:54" in top[0].text
+    assert "◉" in top[0].text
+
+
+def test_live_streams_get_no_fake_progress_row():
+    """A live stream has no end, so a bar would be a lie."""
+    from bot.keyboards.inline import player_panel_kb
+
+    kb = player_panel_kb(True, False, elapsed=90, duration=0)
+    assert "◉" not in kb.inline_keyboard[0][0].text
+
+    plain = player_panel_kb(True, False)
+    assert len(plain.inline_keyboard) == 3
+
+
+def test_progress_row_shows_zero_not_a_dash_at_start():
+    """fmt_duration renders 0 as an em dash, which is wrong for 0:00."""
+    from bot.keyboards.inline import player_panel_kb
+
+    kb = player_panel_kb(True, False, elapsed=0, duration=200)
+    assert kb.inline_keyboard[0][0].text.startswith("0:00")
+
+
+def test_progress_row_does_not_displace_the_controls():
+    from bot.keyboards.inline import player_panel_kb
+
+    kb = player_panel_kb(True, False, elapsed=10, duration=100)
+    glyphs = [b.text for b in kb.inline_keyboard[1]]
+    assert glyphs == ["⏮", "⏸", "⏭", "⏹"]
+    assert len(kb.inline_keyboard) == 4

@@ -115,8 +115,10 @@ async def play_track(
             volume=await queue_manager.get_volume(chat_id),
             loop_mode=(await queue_manager.get_loop(chat_id)).value,
         )
-        if not await _send_with_thumbnail(message, track, card, edit_msg):
-            await send_card(message, card, reply_markup=player_panel_kb(True), edit=edit_msg)
+        # Duration drives the progress row; live streams have none and skip it.
+        panel = player_panel_kb(True, elapsed=0, duration=track.get("duration") or 0)
+        if not await _send_with_thumbnail(message, track, card, edit_msg, panel):
+            await send_card(message, card, reply_markup=panel, edit=edit_msg)
         return True
 
     try:
@@ -134,7 +136,7 @@ async def play_track(
     return True
 
 
-async def _send_with_thumbnail(message: Message, track: dict, card, edit_msg) -> bool:
+async def _send_with_thumbnail(message: Message, track: dict, card, edit_msg, panel=None) -> bool:
     """Try to send the now-playing card as an image. False -> caller falls back.
 
     Image cards are opt-out per chat because they cost a render and some
@@ -158,7 +160,7 @@ async def _send_with_thumbnail(message: Message, track: dict, card, edit_msg) ->
             FSInputFile(image),
             caption=caption,
             parse_mode="HTML",
-            reply_markup=player_panel_kb(True),
+            reply_markup=panel or player_panel_kb(True),
         )
         if edit_msg:
             try:

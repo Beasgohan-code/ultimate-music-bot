@@ -158,19 +158,56 @@ def main_menu_kb() -> InlineKeyboardMarkup:
     )
 
 
-def player_panel_kb(is_playing: bool = False, is_paused: bool = False) -> InlineKeyboardMarkup:
+def _progress_label(elapsed: int, duration: int) -> str:
+    """A one-line "0:42 ──◉──── 3:15" label for the player's top row.
+
+    Button text has no monospace, so this stays short and uses the knob
+    position alone to convey progress.
+    """
+    from bot.utils.cards import fmt_duration, progress_bar
+
+    bar = progress_bar(elapsed, duration, width=10)
+    # fmt_duration treats 0 as "unknown" and renders an em dash, which is
+    # wrong for a track that has simply just started.
+    left = "0:00" if not elapsed else fmt_duration(elapsed)
+    return f"{left} {bar} {fmt_duration(duration)}"
+
+
+def player_panel_kb(
+    is_playing: bool = False,
+    is_paused: bool = False,
+    *,
+    elapsed: int | None = None,
+    duration: int | None = None,
+) -> InlineKeyboardMarkup:
     """Transport controls for the now-playing card.
 
     Fourteen buttons in five rows read as a wall of text on a phone. The
     controls people press constantly (skip, pause, volume) get the top rows as
     bare glyphs — universally understood and easy to hit — and the rest moves
     behind a single "More" row.
+
+    When elapsed/duration are known a progress row is added on top, the way
+    DAXXMUSIC does it: the bar sits in the markup rather than the text, so
+    refreshing it only edits the keyboard and never re-sends the card.
     """
     play_pause = "▶️" if is_paused else "⏸"
     play_data = "ctrl:resume" if is_paused else "ctrl:pause"
 
+    rows: list[list[InlineKeyboardButton]] = []
+    if duration and duration > 0 and elapsed is not None:
+        # Inert label — a callback that does nothing would just confuse.
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=_progress_label(elapsed, duration),
+                    callback_data="ctrl:noop",
+                )
+            ]
+        )
+
     return InlineKeyboardMarkup(
-        inline_keyboard=[
+        inline_keyboard=rows + [
             # Transport, in the order a physical player has them.
             [
                 InlineKeyboardButton(text="⏮", callback_data="ctrl:replay"),

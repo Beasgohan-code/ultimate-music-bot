@@ -322,18 +322,27 @@ def _check_js_runtime() -> bool:
     """Report which JS runtime yt-dlp will use, installing one if needed."""
     _ensure_node()
 
-    from bot.services.music import _js_runtimes, _player_clients, materialize_cookies
+    from bot.services.music import _js_runtimes, _player_clients, cookie_status
 
     # State the anti-block configuration outright. When extraction fails, the
     # first question is always "were cookies actually loaded?" — answer it in
     # the log rather than making someone reason about it.
-    if materialize_cookies():
-        logger.info("YouTube cookies: loaded")
-    else:
+    status = cookie_status()
+    if status == "none":
         logger.info(
             "YouTube cookies: none (set COOKIES_FILE or COOKIES_DATA if "
             "extraction gets blocked)"
         )
+    elif status.startswith("PRESENT BUT UNUSABLE"):
+        # Loud, because an expired jar fails exactly like no jar at all and
+        # that ambiguity is expensive to debug.
+        logger.warning("YouTube cookies: %s", status)
+        logger.warning(
+            "Re-export cookies from a browser where you are signed in to "
+            "YouTube; the current file will not get past an IP block."
+        )
+    else:
+        logger.info("YouTube cookies: %s", status)
     logger.info("YouTube player clients: %s", ", ".join(_player_clients()))
 
     runtimes = _js_runtimes()

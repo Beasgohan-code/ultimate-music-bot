@@ -176,6 +176,31 @@ the symbols py-tgcalls needs, and locates or installs FFmpeg. A misconfigured
 dependency produces an explicit message with the fix, rather than a traceback
 from deep inside a library.
 
+### Checking your cookies
+
+Cookies expire. An expired jar is worse than no jar at all: yt-dlp silently
+drops the dead entries, sends the request unauthenticated, and the failure
+looks identical to having no cookies configured. The startup banner now says
+which it is:
+
+```
+YouTube cookies: loaded (14 cookies, signed in, first expires in 61d)
+YouTube cookies: PRESENT BUT UNUSABLE - every cookie has expired
+YouTube cookies: PRESENT BUT UNUSABLE - no login cookies (SID / LOGIN_INFO)
+```
+
+A jar only works if it contains a live `SID`, `__Secure-1PSID` or `LOGIN_INFO`
+cookie — those carry the login. A file full of `VISITOR_INFO1_LIVE`, `PREF` and
+`YSC` is not signed in to anything, however long it is.
+
+Set `COOKIES_DIR` to a folder of several jars to rotate between accounts, so no
+single one carries every request.
+
+**Never paste cookies into a chat, an issue or a commit.** They are equivalent
+to your password and they do not need your 2FA. If you have posted them
+anywhere, sign out of that Google account on all devices immediately, which
+invalidates them.
+
 ## Keeping chats quiet
 
 A music bot is chatty: every `/play` leaves a command, a status message and a
