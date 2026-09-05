@@ -249,24 +249,34 @@ def queue_card(
     page = max(0, min(page, total_pages - 1))
     chunk = tracks[page * per_page : (page + 1) * per_page]
 
-    card.table(
-        ["#", "Track", "Artist", "Length"],
-        [
+    # Two lines per entry rather than a table: Telegram renders a proportional
+    # font, so space-padded columns never align on a phone. Title leads on its
+    # own line, details sit underneath in a lighter style.
+    for idx, t in enumerate(chunk):
+        position = page * per_page + idx + 1
+        meta = [fmt_duration(t.get("duration"))]
+        artist = (t.get("artist") or "").strip()
+        if artist:
+            meta.insert(0, _clip(artist, 28))
+        requester = (t.get("requester") or "").strip()
+        if requester:
+            meta.append(f"🙋 {_clip(requester, 16)}")
+        card.para(
             [
-                c(str(page * per_page + idx + 1)),
-                _clip(t.get("title", "Unknown"), 34),
-                _clip(t.get("artist", "—"), 20),
-                c(fmt_duration(t.get("duration"))),
+                c(f"{position:>2}"),
+                plain("  "),
+                b(_clip(t.get("title", "Unknown"), 42)),
             ]
-            for idx, t in enumerate(chunk)
-        ],
-    )
+        )
+        card.para([plain("     "), i("  •  ".join(meta))])
 
     total_secs = sum(int(t.get("duration") or 0) for t in tracks)
-    card.footer(
-        f"Page {page + 1}/{total_pages}  •  {len(tracks)} track(s)  •  "
-        f"{fmt_duration(total_secs)} total"
-    )
+    parts = [f"{len(tracks)} track{'s' if len(tracks) != 1 else ''}"]
+    if total_secs:
+        parts.append(f"{fmt_duration(total_secs)} total")
+    if total_pages > 1:
+        parts.append(f"page {page + 1}/{total_pages}")
+    card.footer("  •  ".join(parts))
     return card
 
 
@@ -276,19 +286,19 @@ def search_card(query: str, results: list[dict[str, Any]]) -> RichCard:
         .heading([_icon("🔍"), b("Search Results")], size=1)
         .para([plain("Query: "), c(query)])
     )
-    card.table(
-        ["#", "Title", "Artist", "Length"],
-        [
-            [
-                c(str(idx)),
-                _clip(r.get("title", "Unknown"), 34),
-                _clip(r.get("artist", "—"), 20),
-                c(fmt_duration(r.get("duration"))),
-            ]
-            for idx, r in enumerate(results[:10], 1)
-        ],
-    )
-    card.footer("Tap a numbered button below to play or queue a result.")
+    for idx, r in enumerate(results[:10], 1):
+        meta = []
+        artist = (r.get("artist") or "").strip()
+        if artist:
+            meta.append(_clip(artist, 28))
+        meta.append(fmt_duration(r.get("duration")))
+        source = (r.get("source") or "").strip()
+        if source:
+            meta.append(source_badge(source))
+        card.para([c(f"{idx:>2}"), plain("  "), b(_clip(r.get("title", "Unknown"), 42))])
+        card.para([plain("     "), i("  •  ".join(meta))])
+
+    card.footer("Tap a number below to play it.")
     return card
 
 

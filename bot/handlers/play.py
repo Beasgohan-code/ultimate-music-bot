@@ -43,6 +43,28 @@ logger = logging.getLogger(__name__)
 router = Router(name="play")
 
 
+def _brand(track: dict, resolved, index: int) -> None:
+    """Stamp the originating platform and its artwork onto a matched track.
+
+    The audio comes from YouTube or SoundCloud, but the user pasted a Spotify
+    link — so the card should say Spotify and show the album cover, not a
+    video still. Title and artist also come from the platform, which has
+    cleaner metadata than a YouTube video title full of "(Official Video)".
+    """
+    rows = getattr(resolved, "tracks", None) or []
+    row = rows[index] if index < len(rows) else {}
+    if row.get("artwork"):
+        track["thumbnail"] = row["artwork"]
+    elif getattr(resolved, "artwork", ""):
+        track["thumbnail"] = resolved.artwork
+    if row.get("title"):
+        track["title"] = row["title"]
+    if row.get("artist"):
+        track["artist"] = row["artist"]
+    track["source"] = resolved.platform
+    track["origin_url"] = getattr(resolved, "url", "") or ""
+
+
 async def _import_platform_link(message: Message, query: str, *, video: bool, status) -> bool:
     """Handle a Spotify / Apple Music / Deezer link. True when handled.
 
@@ -79,8 +101,39 @@ async def _import_platform_link(message: Message, query: str, *, video: bool, st
         return True
 
     queries = resolved.queries()
+    if not queries:
+        await send_card(
+            message,
+            error_card(
+                "That link had no playable tracks.",
+                "An empty playlist, or every track was unavailable.",
+            ),
+            edit=status,
+        )
+        return True
+
     if resolved.is_single and len(queries) == 1:
-        return False  # fall through: resolve_query() turns it into a search
+        # Play it here rather than falling through to a plain search. The
+        # search would find the right audio but label it YouTube and attach a
+        # random video still — losing the album art and the Spotify badge the
+        # user pasted a Spotify link to get.
+        track = await get_stream_url(queries[0], video=video)
+        if not track:
+            err = music_last_error()
+            await send_card(
+                message,
+                error_card(
+                    f"Found “{resolved.title}” but couldn't get the audio.",
+                    BLOCKED_HINT
+                    if looks_blocked(err)
+                    else "No streamable source had this track.",
+                ),
+                edit=status,
+            )
+            return True
+        _brand(track, resolved, 0)
+        await play_track(message, track, edit_msg=status, queue_only=queue_only)
+        return True
 
     await status.edit_text(
         f"⏳ <b>Importing {len(queries)} tracks…</b>", parse_mode="HTML"
@@ -98,11 +151,7 @@ async def _import_platform_link(message: Message, query: str, *, video: bool, st
         )
         return True
 
-    # Carry the original artwork through — YouTube's thumbnail for a matched
-    # track is often a random video still, the album art is better.
-    if resolved.tracks and resolved.tracks[0].get("artwork"):
-        first["thumbnail"] = resolved.tracks[0]["artwork"]
-    first["source"] = resolved.platform
+    _brand(first, resolved, 0)
 
     started = await play_track(message, first, edit_msg=status)
     if not started:
@@ -118,10 +167,7 @@ async def _import_platform_link(message: Message, query: str, *, video: bool, st
             track = await get_stream_url(term, video=video)
         if not track:
             return
-        meta = resolved.tracks[idx] if idx < len(resolved.tracks) else {}
-        if meta.get("artwork"):
-            track["thumbnail"] = meta["artwork"]
-        track["source"] = resolved.platform
+        _brand(track, resolved, idx)
         track["requester"] = message.from_user.full_name if message.from_user else ""
         try:
             await queue_manager.add(message.chat.id, track)

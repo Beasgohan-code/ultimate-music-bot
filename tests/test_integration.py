@@ -1764,3 +1764,115 @@ def test_polling_clears_a_stale_webhook():
     assert "delete_webhook" in source
     assert "drop_pending_updates=True" in source
     assert source.index("delete_webhook") < source.index("start_polling")
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Platform branding
+#
+# Audio comes from YouTube/SoundCloud, but the user pasted a Spotify link.
+# The card must reflect what they pasted, not the search backend that
+# happened to serve the bytes.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def _spotify_resolved(**over):
+    from bot.services.platforms import Resolved
+
+    base = dict(
+        platform="spotify",
+        kind="track",
+        title="Bohemian Rhapsody",
+        subtitle="Queen",
+        artwork="https://i.scdn.co/image/album.jpg",
+        url="https://open.spotify.com/track/abc",
+        tracks=[
+            {
+                "title": "Bohemian Rhapsody",
+                "artist": "Queen",
+                "artwork": "https://i.scdn.co/image/album.jpg",
+            }
+        ],
+        truncated=False,
+    )
+    base.update(over)
+    return Resolved(**base)
+
+
+def _youtube_match():
+    """What a search backend hands back: right audio, wrong branding."""
+    return {
+        "title": "Queen - Bohemian Rhapsody (Official Video Remastered)",
+        "artist": "Queen Official",
+        "duration": 354,
+        "source": "Youtube",
+        "thumbnail": "https://i.ytimg.com/vi/xyz/hq.jpg",
+    }
+
+
+def test_platform_link_keeps_its_identity():
+    from bot.handlers.play import _brand
+
+    track = _youtube_match()
+    _brand(track, _spotify_resolved(), 0)
+
+    assert track["source"] == "spotify"
+    assert "scdn.co" in track["thumbnail"], "album art was lost"
+    assert track["title"] == "Bohemian Rhapsody", "kept the noisy YouTube title"
+    assert track["artist"] == "Queen"
+    assert track["origin_url"] == "https://open.spotify.com/track/abc"
+
+
+def test_branded_track_renders_the_right_badge():
+    from bot.handlers.play import _brand
+    from bot.utils.cards import now_playing_card
+
+    track = _youtube_match()
+    _brand(track, _spotify_resolved(), 0)
+    html = now_playing_card(track, elapsed=127, queue_len=0).to_html()
+
+    assert "🟢 Spotify" in html
+    assert "YouTube" not in html
+    assert "Official Video" not in html
+
+
+def test_branding_survives_missing_metadata():
+    """Resolvers without per-track rows must not blow up or wipe good data."""
+    from bot.handlers.play import _brand
+
+    track = _youtube_match()
+    _brand(track, _spotify_resolved(tracks=[], artwork=""), 5)
+
+    assert track["source"] == "spotify"
+    # No album art available, so the existing thumbnail must be kept.
+    assert track["thumbnail"] == "https://i.ytimg.com/vi/xyz/hq.jpg"
+    assert track["title"]  # not blanked out
+
+
+def test_falls_back_to_release_artwork_when_track_has_none():
+    from bot.handlers.play import _brand
+
+    track = _youtube_match()
+    resolved = _spotify_resolved(tracks=[{"title": "Song", "artist": "A"}])
+    _brand(track, resolved, 0)
+    assert track["thumbnail"] == "https://i.scdn.co/image/album.jpg"
+
+
+def test_single_track_links_no_longer_fall_through_to_plain_search():
+    """A single Spotify track used to lose its badge and art via fall-through."""
+    import inspect
+
+    from bot.handlers import play
+
+    source = inspect.getsource(play._import_platform_link)
+    single = source.split("is_single")[1]
+    assert "_brand" in single, "single-track path must brand the result"
+    assert "play_track" in single, "single-track path must play, not fall through"
+
+
+def test_empty_playlist_is_reported_not_crashed():
+    import inspect
+
+    from bot.handlers import play
+
+    source = inspect.getsource(play._import_platform_link)
+    assert "if not queries:" in source, "empty track list must be handled"

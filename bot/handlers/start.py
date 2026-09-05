@@ -99,9 +99,17 @@ async def cb_settings(query: CallbackQuery) -> None:
 @router.callback_query(F.data == "menu:back")
 async def cb_back(query: CallbackQuery) -> None:
     me = await query.bot.get_me()
+    # Keep the greeting personal on the way back; rebuilding it without the
+    # user made the card silently downgrade to "Hey, there".
+    user = query.from_user
     try:
         await query.message.edit_text(
-            welcome_card(config.bot_name or me.first_name, me.username or "").to_html(),
+            welcome_card(
+                config.bot_name or me.first_name,
+                me.username or "",
+                first_name=user.first_name if user else "there",
+                user_username=(user.username or "") if user else "",
+            ).to_html(),
             parse_mode="HTML",
             reply_markup=main_menu_kb(),
         )
