@@ -7,8 +7,14 @@ FROM python:3.12-slim
 
 # FFmpeg is not optional — it is what actually encodes the audio stream and
 # performs the MP3 transcode for /song.
+#
+# Node is not optional either, though it looks like it should be: yt-dlp needs
+# a JavaScript runtime to solve YouTube's player challenges. Without one it
+# falls back to a single player client and most extractions fail with
+# "Failed to extract any player response".
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
+    nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 ENV PYTHONUNBUFFERED=1 \

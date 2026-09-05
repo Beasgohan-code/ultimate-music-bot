@@ -21,6 +21,12 @@ py-tgcalls>=2.3.3
 # ffmpeg`, as the Dockerfile does). On PaaS hosts with no apt (Render's native
 # Python runtime), this wheel ships a static binary that main.py puts on PATH.
 imageio-ffmpeg>=0.5.1
+# yt-dlp needs a JS runtime to solve YouTube's player challenges. Without one
+# it uses a single player client and most extractions fail on server IPs with
+# "Failed to extract any player response". Managed Python hosts have no apt,
+# so ship Node as a wheel. yt-dlp-ejs is the solver that runs on it.
+nodejs-wheel-binaries>=24.0.0
+yt-dlp-ejs>=0.8.0
 
 # HTTP
 aiohttp>=3.12.0

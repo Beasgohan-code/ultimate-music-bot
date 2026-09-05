@@ -172,6 +172,10 @@ class Config:
     )
     cookies_file: str = field(default_factory=lambda: _clean(os.getenv("COOKIES_FILE")))
     ytdlp_proxy: str = field(default_factory=lambda: _clean(os.getenv("YTDLP_PROXY")))
+    # JS runtime for yt-dlp's YouTube challenge solver. Blank = autodetect
+    # (deno, node, bun, quickjs); "none" disables. Without one, yt-dlp tries a
+    # single player client and gives up, which reads as "no results".
+    js_runtime: str = field(default_factory=lambda: _clean(os.getenv("YTDLP_JS_RUNTIME")))
 
     # ── Third-party APIs ────────────────────────────────────────────────
     spotify_client_id: str = field(default_factory=lambda: _clean(os.getenv("SPOTIFY_CLIENT_ID")))

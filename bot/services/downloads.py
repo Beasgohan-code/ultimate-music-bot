@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from bot.config import DOWNLOAD_DIR, config
+from bot.services import music
 from bot.services.database import database
 
 logger = logging.getLogger(__name__)
@@ -136,6 +137,11 @@ def _ytdl_download(track: dict[str, Any], target_dir: Path, video: bool) -> Path
         opts["cookiefile"] = config.cookies_file
     if config.ytdlp_proxy:
         opts["proxy"] = config.ytdlp_proxy
+    # Same JS-runtime requirement as streaming: without one, yt-dlp tries a
+    # single YouTube player client and fails on datacenter IPs.
+    runtimes = music._js_runtimes()
+    if runtimes:
+        opts["js_runtimes"] = runtimes
 
     source = track.get("url") or track.get("title", "")
     with yt_dlp.YoutubeDL(opts) as ydl:

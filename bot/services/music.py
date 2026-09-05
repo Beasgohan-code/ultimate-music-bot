@@ -4,13 +4,85 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
+import shutil
 from typing import Any
 from urllib.parse import urlparse
 
 import yt_dlp
 
+from bot.config import config
+
 logger = logging.getLogger(__name__)
+
+#: Message YouTube extraction failures are reported with, so handlers can tell
+#: "this IP is blocked" apart from "there is genuinely no such song".
+BLOCKED_HINT = (
+    "YouTube is refusing requests from this server's IP. "
+    "Set COOKIES_FILE (exported from a logged-in browser) or YTDLP_PROXY."
+)
+
+_BLOCK_MARKERS = (
+    "failed to extract any player response",
+    "sign in to confirm",
+    "not a bot",
+    "your ip is likely being blocked",
+    "all player responses are invalid",
+    "http error 429",
+    "this content isn't available",
+)
+
+
+def _js_runtimes() -> dict[str, dict]:
+    """Pick a JavaScript runtime for yt-dlp's YouTube challenge solver.
+
+    This matters far more than it looks. Modern yt-dlp needs a JS runtime to
+    solve YouTube's player challenges; without one it falls back to
+    ``_DEFAULT_JSLESS_CLIENTS``, which is a *single* client (``visionos``).
+    One client means one chance, and on a datacenter IP that chance usually
+    fails with "Failed to extract any player response" and no retry.
+
+    With a runtime registered it uses the full default client list, so a
+    refusal from one client falls through to the next.
+
+    yt-dlp only auto-registers Deno, so Node — which most hosts already have —
+    has to be opted into explicitly.
+    """
+    configured = (config.js_runtime or "").strip().lower()
+    if configured in {"none", "off", "disabled"}:
+        return {}
+
+    order = [configured] if configured else ["deno", "node", "bun", "quickjs"]
+    for name in order:
+        if name and shutil.which(name):
+            return {name: {}}
+    return {}
+
+
+def _ydl_common() -> dict[str, Any]:
+    """Options every extraction shares: auth, proxy and JS runtime."""
+    opts: dict[str, Any] = {}
+
+    runtimes = _js_runtimes()
+    if runtimes:
+        opts["js_runtimes"] = runtimes
+
+    # Cookies from a logged-in account are the single most effective way past
+    # a datacenter-IP block. These were already read from the environment but
+    # only ever applied to /song downloads, never to streaming or search.
+    if config.cookies_file and os.path.isfile(config.cookies_file):
+        opts["cookiefile"] = config.cookies_file
+    if config.ytdlp_proxy:
+        opts["proxy"] = config.ytdlp_proxy
+    return opts
+
+
+def looks_blocked(error_text: str) -> bool:
+    """True when an extraction error looks like an IP block, not a bad query."""
+    low = (error_text or "").lower()
+    return any(marker in low for marker in _BLOCK_MARKERS)
+
 
 YDL_OPTS_BASE: dict[str, Any] = {
     "quiet": True,
@@ -19,6 +91,8 @@ YDL_OPTS_BASE: dict[str, Any] = {
     "socket_timeout": 30,
     "retries": 3,
     "geo_bypass": True,
+    # Keep transient network hiccups from surfacing as "no results".
+    "extractor_retries": 3,
 }
 
 YDL_AUDIO: dict[str, Any] = {
@@ -64,18 +138,43 @@ def is_live_url(text: str) -> bool:
     return bool(M3U8_RE.search(text) or "live" in text.lower())
 
 
+#: Last extraction failure, so handlers can explain *why* nothing came back
+#: instead of always claiming "no results found".
+_last_error: str = ""
+
+
+def last_error() -> str:
+    return _last_error
+
+
 async def _run_ytdl(opts: dict[str, Any], query: str) -> dict[str, Any] | list[dict[str, Any]] | None:
+    global _last_error
     loop = asyncio.get_event_loop()
+    merged = {**opts, **_ydl_common()}
 
     def _extract() -> dict[str, Any] | list[dict[str, Any]] | None:
-        with yt_dlp.YoutubeDL(opts) as ydl:
+        with yt_dlp.YoutubeDL(merged) as ydl:
             return ydl.extract_info(query, download=False)
 
     try:
-        return await loop.run_in_executor(None, _extract)
+        result = await loop.run_in_executor(None, _extract)
     except Exception as exc:
-        logger.error("yt-dlp extraction failed for %r: %s", query, exc)
+        _last_error = str(exc)
+        if looks_blocked(_last_error):
+            # Distinguish the systemic failure from a typo'd song title, and
+            # do not bury it at DEBUG — this one needs operator action.
+            logger.error(
+                "yt-dlp blocked while extracting %r: %s | %s",
+                query,
+                exc,
+                BLOCKED_HINT,
+            )
+        else:
+            logger.error("yt-dlp extraction failed for %r: %s", query, exc)
         return None
+
+    _last_error = ""
+    return result
 
 
 def _normalize_entry(entry: dict[str, Any], requester: str = "") -> dict[str, Any]:

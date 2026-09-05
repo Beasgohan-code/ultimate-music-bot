@@ -1135,3 +1135,155 @@ def test_ensure_ffmpeg_falls_back_to_the_bundled_binary(monkeypatch):
     assert resolved, "ffmpeg was not placed on PATH"
     out = subprocess.run([resolved, "-version"], capture_output=True, text=True)
     assert out.returncode == 0 and "ffmpeg version" in out.stdout
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# YouTube extraction: JS runtime, cookies/proxy plumbing, error reporting
+#
+# The live deploy hit "Failed to extract any player response" on every query.
+# Root cause was not the query: without a JavaScript runtime yt-dlp falls back
+# to a single player client, and datacenter IPs get refused by it.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def test_a_js_runtime_is_available_to_ytdlp():
+    """Without one, yt-dlp uses a reduced client set that servers fail."""
+    import importlib
+
+    main = importlib.import_module("main")
+    main._ensure_node()
+
+    from bot.services.music import _js_runtimes
+
+    assert _js_runtimes(), (
+        "No JS runtime resolved. yt-dlp will fall back to a single player "
+        "client and YouTube extraction will fail on this host."
+    )
+
+
+def test_js_runtime_widens_the_youtube_client_set():
+    """The actual mechanism behind the fix, pinned so it cannot regress.
+
+    Without a runtime yt-dlp requests only _DEFAULT_JSLESS_CLIENTS. One client
+    means one chance and no fallback, which is why every query failed.
+    """
+    import importlib
+
+    main = importlib.import_module("main")
+    main._ensure_node()
+
+    from yt_dlp.YoutubeDL import YoutubeDL
+
+    from bot.services.music import _ydl_common
+
+    def clients_for(opts):
+        ydl = YoutubeDL({"quiet": True, "no_warnings": True, **opts})
+        ie = ydl.get_info_extractor("Youtube")
+        ie.set_downloader(ydl)
+        ie.initialize()
+        return ie._get_requested_clients("https://www.youtube.com/watch?v=x", {}, False)
+
+    without = clients_for({})
+    with_runtime = clients_for(_ydl_common())
+
+    assert len(with_runtime) > len(without), (
+        f"JS runtime did not widen the client set: {without} -> {with_runtime}"
+    )
+
+
+def test_streaming_extraction_applies_cookies_and_proxy(monkeypatch, tmp_path):
+    """These were read from the environment but only used for /song.
+
+    Streaming and search silently ignored them, so the documented escape hatch
+    for an IP block did not work where it was needed most.
+    """
+    import dataclasses
+
+    from bot.services import music
+
+    cookies = tmp_path / "cookies.txt"
+    cookies.write_text("# Netscape HTTP Cookie File\n")
+
+    monkeypatch.setattr(
+        music,
+        "config",
+        dataclasses.replace(
+            music.config, cookies_file=str(cookies), ytdlp_proxy="socks5://127.0.0.1:9050"
+        ),
+    )
+
+    opts = music._ydl_common()
+    assert opts["cookiefile"] == str(cookies)
+    assert opts["proxy"] == "socks5://127.0.0.1:9050"
+
+
+def test_download_options_carry_the_js_runtime():
+    """/song downloads hit the same YouTube gate as streaming."""
+    import inspect
+
+    from bot.services import downloads
+
+    source = inspect.getsource(downloads)
+    assert "js_runtimes" in source, "download path lacks a JS runtime"
+
+
+def test_blocked_errors_are_told_apart_from_empty_results():
+    """An IP block and a typo need different fixes, so they need different text."""
+    from bot.services.music import looks_blocked
+
+    assert looks_blocked(
+        "ERROR: [youtube] IT6svoR9M-0: Failed to extract any player response"
+    )
+    assert looks_blocked("Sign in to confirm you're not a bot")
+    assert looks_blocked("Your IP is likely being blocked by Youtube")
+    assert not looks_blocked("Unsupported URL: https://example.com/x")
+    assert not looks_blocked("")
+
+
+def test_extraction_failure_is_recorded_for_the_user_message(monkeypatch):
+    """last_error() is what lets handlers explain the real cause."""
+    import asyncio
+
+    from bot.services import music
+
+    class _Boom:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def extract_info(self, *a, **k):
+            raise RuntimeError("Failed to extract any player response")
+
+    monkeypatch.setattr(music.yt_dlp, "YoutubeDL", lambda *a, **k: _Boom())
+
+    result = asyncio.run(music._run_ytdl({}, "ytsearch1:anything"))
+    assert result is None
+    assert music.looks_blocked(music.last_error())
+
+
+def test_play_handler_reports_a_block_distinctly():
+    """The user-visible payoff: no more 'could not find that media' for a block."""
+    import inspect
+
+    from bot.handlers import play
+
+    source = inspect.getsource(play)
+    assert "looks_blocked" in source
+    assert "BLOCKED_HINT" in source
+
+
+def test_documented_extraction_env_vars_are_actually_read():
+    """A documented variable no code reads is a bug, not documentation."""
+    from bot.config import config
+
+    env_example = (Path(__file__).resolve().parent.parent / ".env.example").read_text()
+
+    for key, attr in (
+        ("COOKIES_FILE", "cookies_file"),
+        ("YTDLP_PROXY", "ytdlp_proxy"),
+        ("YTDLP_JS_RUNTIME", "js_runtime"),
+    ):
+        assert key in env_example, f"{key} is not documented in .env.example"
+        assert hasattr(config, attr), f"config has no field for {key}"

@@ -92,8 +92,15 @@ sudo apt install ffmpeg python3-pip
 ```
 
 If your host has no apt (Render's native Python runtime, for example), the
-bundled `imageio-ffmpeg` wheel supplies a static binary and the bot puts it on
-`PATH` automatically at startup.
+bundled `imageio-ffmpeg` and `nodejs-wheel-binaries` wheels supply static
+binaries and the bot puts them on `PATH` automatically at startup.
+
+> **Node is a real dependency, not an optional one.** yt-dlp needs a
+> JavaScript runtime to solve YouTube's player challenges. Without one it
+> requests a single player client, which servers on datacenter IPs are
+> routinely refused by — every query then fails with *"Failed to extract any
+> player response"*, which looks like a broken search rather than a missing
+> package.
 
 > **MTProto client:** this project needs **kurigram**, not official `pyrogram`.
 > Official pyrogram hasn't shipped since 2023 and lacks `GroupcallForbidden`,
@@ -168,6 +175,20 @@ On boot the bot runs a preflight check: it verifies the MTProto client provides
 the symbols py-tgcalls needs, and locates or installs FFmpeg. A misconfigured
 dependency produces an explicit message with the fix, rather than a traceback
 from deep inside a library.
+
+## When YouTube blocks your server
+
+Cloud IPs get flagged, and then extraction fails for every query. The bot
+distinguishes this from a genuine no-results and tells you which it hit. In
+order of effectiveness:
+
+| Setting | What it does |
+|---|---|
+| `COOKIES_FILE` | Cookies exported from a logged-in browser (Netscape format). Most effective, and also unlocks age-restricted videos. Use a throwaway account |
+| `YTDLP_PROXY` | Routes extraction through a residential proxy |
+| `YTDLP_JS_RUNTIME` | Pins the JS runtime. Blank autodetects and falls back to bundled Node; `none` disables |
+
+Cookies and proxy apply to streaming, search *and* `/song` downloads.
 
 ## Health checks
 

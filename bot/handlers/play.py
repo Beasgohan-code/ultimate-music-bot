@@ -13,7 +13,15 @@ from aiogram.types import Message
 from bot.keyboards.inline import player_panel_kb, search_results_kb
 from bot.config import config
 from bot.services.autoleave import auto_leave
-from bot.services.music import get_stream_url, is_live_url, is_url, search_youtube
+from bot.services.music import (
+    BLOCKED_HINT,
+    get_stream_url,
+    is_live_url,
+    is_url,
+    last_error as music_last_error,
+    looks_blocked,
+    search_youtube,
+)
 from bot.services.queue import queue_manager
 from bot.services.stream import stream_manager
 from bot.utils.helpers import ensure_assistant_in_chat, extract_query, is_group_chat, reply_error
@@ -44,14 +52,23 @@ async def _resolve_and_play(
     status = await message.answer("⏳ <b>Loading media…</b>", parse_mode="HTML")
     track = await get_stream_url(query, video=video, live=live)
     if not track:
-        await send_card(
-            message,
-            error_card(
-                "I could not find or extract that media.",
-                "Try a different search term or paste a direct link.",
-            ),
-            edit=status,
-        )
+        # "No results" and "YouTube blocked this server" look identical to the
+        # user but need completely different fixes, so say which one it is.
+        if looks_blocked(music_last_error()):
+            await send_card(
+                message,
+                error_card("YouTube refused this request.", BLOCKED_HINT),
+                edit=status,
+            )
+        else:
+            await send_card(
+                message,
+                error_card(
+                    "I could not find or extract that media.",
+                    "Try a different search term or paste a direct link.",
+                ),
+                edit=status,
+            )
         return
     await play_track(
         message, track,
@@ -164,7 +181,16 @@ async def cmd_search(message: Message) -> None:
     status = await message.answer("🔍 <b>Searching…</b>", parse_mode="HTML")
     results = await search_youtube(query, limit=8)
     if not results:
-        await send_card(message, error_card("No results found.", "Try different keywords."), edit=status)
+        if looks_blocked(music_last_error()):
+            await send_card(
+                message,
+                error_card("YouTube refused this request.", BLOCKED_HINT),
+                edit=status,
+            )
+        else:
+            await send_card(
+                message, error_card("No results found.", "Try different keywords."), edit=status
+            )
         return
 
     from bot.utils.helpers import cache_search_results

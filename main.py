@@ -244,6 +244,70 @@ def _ensure_ffmpeg() -> bool:
     return True
 
 
+def _ensure_node() -> bool:
+    """Make sure a JavaScript runtime is reachable on PATH.
+
+    yt-dlp needs one to solve YouTube's player challenges. Without it, it
+    falls back to a single player client, which datacenter IPs almost always
+    fail — surfacing to users as "I could not find or extract that media" for
+    every query, a baffling symptom for a missing system package.
+
+    Same constraint as FFmpeg: no apt on managed Python hosts, so fall back to
+    the Node binary shipped by the nodejs-wheel-binaries wheel.
+    """
+    for runtime in ("node", "deno", "bun", "quickjs"):
+        if shutil.which(runtime):
+            return True
+
+    try:
+        from nodejs_wheel.executable import ROOT_DIR
+    except ImportError:
+        return False
+
+    binary = Path(ROOT_DIR) / "bin" / "node"
+    if not binary.is_file():
+        return False
+
+    bin_dir = DATA_DIR / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    link = bin_dir / "node"
+    try:
+        if link.is_symlink() or link.exists():
+            link.unlink()
+        link.symlink_to(binary)
+    except OSError:
+        try:
+            shutil.copy2(binary, link)
+            link.chmod(0o755)
+        except OSError as exc:
+            logger.error("Could not install a bundled Node: %s", exc)
+            return False
+
+    if str(bin_dir) not in os.environ.get("PATH", "").split(os.pathsep):
+        os.environ["PATH"] = f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"
+    logger.info("Using bundled Node from nodejs-wheel-binaries")
+    return True
+
+
+def _check_js_runtime() -> bool:
+    """Report which JS runtime yt-dlp will use, installing one if needed."""
+    _ensure_node()
+
+    from bot.services.music import _js_runtimes
+
+    runtimes = _js_runtimes()
+    if runtimes:
+        logger.info("yt-dlp JS runtime: %s", ", ".join(runtimes))
+        return True
+
+    logger.warning(
+        "No JavaScript runtime found (node/deno/bun/quickjs). YouTube "
+        "extraction will use a reduced client set and will likely fail on "
+        "this host. Install Node, or set COOKIES_FILE / YTDLP_PROXY."
+    )
+    return False
+
+
 def _preflight() -> None:
     """Fail loudly and legibly on known-bad dependency combinations.
 
@@ -287,6 +351,8 @@ def _preflight() -> None:
         logger.warning(
             "Continuing without FFmpeg — playback and downloads will not work."
         )
+
+    _check_js_runtime()
 
     if sys.version_info >= (3, 14):
         logger.warning(
