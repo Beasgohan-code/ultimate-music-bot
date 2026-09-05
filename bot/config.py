@@ -176,6 +176,9 @@ class Config:
     # (deno, node, bun, quickjs); "none" disables. Without one, yt-dlp tries a
     # single player client and gives up, which reads as "no results".
     js_runtime: str = field(default_factory=lambda: _clean(os.getenv("YTDLP_JS_RUNTIME")))
+    # Comma-separated YouTube player clients. Blank uses yt-dlp's defaults plus
+    # extra fallbacks; each client is an independent chance past an IP block.
+    youtube_clients: str = field(default_factory=lambda: _clean(os.getenv("YOUTUBE_CLIENTS")))
 
     # ── Third-party APIs ────────────────────────────────────────────────
     spotify_client_id: str = field(default_factory=lambda: _clean(os.getenv("SPOTIFY_CLIENT_ID")))

@@ -1287,3 +1287,49 @@ def test_documented_extraction_env_vars_are_actually_read():
     ):
         assert key in env_example, f"{key} is not documented in .env.example"
         assert hasattr(config, attr), f"config has no field for {key}"
+
+
+def test_extra_player_clients_widen_the_fallback_chain():
+    """Each YouTube client is an independent chance past an IP refusal.
+
+    yt-dlp's default is two clients even with a JS runtime. On a flagged
+    datacenter IP that is very little to fall back on, so extra clients are
+    requested explicitly.
+    """
+    import importlib
+
+    main = importlib.import_module("main")
+    main._ensure_node()
+
+    from yt_dlp.YoutubeDL import YoutubeDL
+
+    from bot.services.music import _ydl_common
+
+    def clients_for(opts):
+        ydl = YoutubeDL({"quiet": True, "no_warnings": True, **opts})
+        ie = ydl.get_info_extractor("Youtube")
+        ie.set_downloader(ydl)
+        ie.initialize()
+        return ie._get_requested_clients("https://www.youtube.com/watch?v=x", {}, False)
+
+    stock = clients_for({})
+    ours = clients_for(_ydl_common())
+
+    assert len(ours) >= len(stock) + 3, f"expected a wider chain, got {ours}"
+    # The default set must still be included, not replaced.
+    assert set(stock).issubset(set(ours)), f"{stock} not preserved in {ours}"
+
+
+def test_youtube_clients_env_var_overrides_the_defaults(monkeypatch):
+    """Operators need to pin clients without a redeploy of the code."""
+    import dataclasses
+
+    from bot.services import music
+
+    monkeypatch.setattr(
+        music, "config", dataclasses.replace(music.config, youtube_clients="tv, ios")
+    )
+    assert music._player_clients() == ["tv", "ios"]
+
+    opts = music._ydl_common()
+    assert opts["extractor_args"]["youtube"]["player_client"] == ["tv", "ios"]

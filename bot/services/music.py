@@ -60,13 +60,35 @@ def _js_runtimes() -> dict[str, dict]:
     return {}
 
 
+#: Extra YouTube player clients to try beyond yt-dlp's defaults.
+#:
+#: Each client is a separate shot at getting a player response, and they are
+#: refused independently — a datacenter IP that `web` rejects may still be
+#: served by `android_vr` or `tv`. The default list is only two clients, so on
+#: a flagged IP there is very little to fall back on. Ordered cheapest-first:
+#: the ones needing no JS challenge come before the web-ish ones.
+_EXTRA_PLAYER_CLIENTS = ("android_vr", "tv", "mweb", "ios")
+
+
+def _player_clients() -> list[str]:
+    """Client list for the YouTube extractor, overridable per deployment."""
+    configured = (config.youtube_clients or "").strip()
+    if configured:
+        return [c.strip() for c in configured.split(",") if c.strip()]
+    return ["default", *_EXTRA_PLAYER_CLIENTS]
+
+
 def _ydl_common() -> dict[str, Any]:
-    """Options every extraction shares: auth, proxy and JS runtime."""
+    """Options every extraction shares: auth, proxy, JS runtime, clients."""
     opts: dict[str, Any] = {}
 
     runtimes = _js_runtimes()
     if runtimes:
         opts["js_runtimes"] = runtimes
+
+    clients = _player_clients()
+    if clients:
+        opts["extractor_args"] = {"youtube": {"player_client": clients}}
 
     # Cookies from a logged-in account are the single most effective way past
     # a datacenter-IP block. These were already read from the environment but
