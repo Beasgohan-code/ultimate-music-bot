@@ -118,6 +118,23 @@ def _banner() -> None:
     logger.info("=" * 62)
 
 
+
+async def _janitor() -> None:
+    """Periodically clear out stale downloads and rendered thumbnails."""
+    from bot.services.downloads import prune_downloads
+    from bot.services.thumbnails import prune_thumbnails
+
+    while True:
+        try:
+            await asyncio.sleep(3600)
+            await prune_downloads()
+            await prune_thumbnails()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("Janitor pass failed: %s", exc)
+
+
 async def main() -> None:
     setup_logging()
     _banner()
@@ -171,6 +188,8 @@ async def main() -> None:
     await calls.start()
     await auto_leave.start()
 
+    janitor = asyncio.create_task(_janitor())
+
     try:
         me = await bot.get_me()
         logger.info("Bot online as @%s (%s)", me.username, me.id)
@@ -204,6 +223,7 @@ async def main() -> None:
     try:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
+        janitor.cancel()
         logger.info("Shutting down…")
         await auto_leave.stop()
         for chat_id in list(stream_manager.active_chats):

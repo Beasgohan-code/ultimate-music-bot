@@ -59,6 +59,16 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_float(name: str, default: float) -> float:
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
 def _clean(value: str | None) -> str:
     """Strip whitespace and stray quotes that people leave in .env files."""
     return (value or "").strip().strip("'\"").strip()
@@ -136,6 +146,9 @@ class Config:
     max_playlist_size: int = field(default_factory=lambda: _env_int("MAX_PLAYLIST_SIZE", 100))
     duration_limit_min: int = field(default_factory=lambda: _env_int("DURATION_LIMIT", 180))
     video_limit_min: int = field(default_factory=lambda: _env_int("VIDEO_LIMIT", 60))
+    voteskip_ratio: float = field(
+        default_factory=lambda: _env_float("VOTESKIP_RATIO", 0.5)
+    )
     admins_only: bool = field(default_factory=lambda: _parse_bool(os.getenv("ADMINS_ONLY"), False))
 
     # ── Housekeeping ────────────────────────────────────────────────────
@@ -143,7 +156,9 @@ class Config:
     auto_end_empty_vc: int = field(default_factory=lambda: _env_int("AUTO_END_EMPTY_VC", 120))
     clean_mode_seconds: int = field(default_factory=lambda: _env_int("CLEAN_MODE_SECONDS", 300))
     throttle_seconds: float = field(
-        default_factory=lambda: float(_env_int("THROTTLE_MS", 700)) / 1000.0
+        default_factory=lambda: _env_float(
+            "THROTTLE_SECONDS", float(_env_int("THROTTLE_MS", 700)) / 1000.0
+        )
     )
 
     # ── Downloads ───────────────────────────────────────────────────────

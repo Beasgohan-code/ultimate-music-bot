@@ -11,12 +11,19 @@ from aiogram.filters import Command
 from aiogram.types import Message
 
 from bot.keyboards.inline import player_panel_kb, search_results_kb
+from bot.config import config
 from bot.services.autoleave import auto_leave
 from bot.services.music import get_stream_url, is_live_url, is_url, search_youtube
 from bot.services.queue import queue_manager
 from bot.services.stream import stream_manager
 from bot.utils.helpers import ensure_assistant_in_chat, extract_query, is_group_chat, reply_error
-from bot.utils.cards import error_card, now_playing_card, queue_card, search_card
+from bot.utils.cards import (
+    error_card,
+    now_playing_card,
+    search_card,
+    success_card,
+    voteskip_card,
+)
 from bot.utils.play_helpers import can_play, play_track
 from bot.utils.rich import send_card, send_html
 
@@ -62,13 +69,60 @@ async def cmd_play(message: Message) -> None:
     await _resolve_and_play(message, query)
 
 
-@router.message(Command("song"))
+@router.message(Command("song", "mp3", "download"))
 async def cmd_song(message: Message) -> None:
+    """Download a track and send it as a file (cached by file_id)."""
     query = extract_query(message)
+    if not query:
+        current = await queue_manager.get_current(message.chat.id)
+        query = (current or {}).get("url") or (current or {}).get("title", "")
     if not query:
         await reply_error(message, "Usage: /song <song name or URL>")
         return
-    await _resolve_and_play(message, query)
+
+    if not config.enable_downloads:
+        await send_card(message, error_card("Downloads are disabled on this instance."))
+        return
+
+    status = await message.answer("🔎 <b>Finding that track…</b>", parse_mode="HTML")
+    track = await get_stream_url(query)
+    if not track:
+        await send_card(
+            message,
+            error_card("I could not find that track.", "Try a different name or a direct link."),
+            edit=status,
+        )
+        return
+
+    from bot.services.downloads import DownloadError, cached_file_id, get_or_send_audio
+
+    cached = await cached_file_id(track)
+    try:
+        await status.edit_text(
+            "📤 <b>Sending…</b>" if cached else "⬇️ <b>Downloading…</b>", parse_mode="HTML"
+        )
+    except Exception:
+        pass
+
+    caption = f"🎵 <b>{track.get('title', 'Unknown')}</b>"
+    if track.get("artist"):
+        caption += f"\n👤 {track['artist']}"
+    caption += f"\n\n<i>via {config.bot_name}</i>"
+
+    try:
+        await get_or_send_audio(message, track, caption=caption)
+    except DownloadError as exc:
+        await send_card(message, error_card(str(exc)), edit=status)
+        return
+    except Exception as exc:
+        logger.error("Song delivery failed: %s", exc)
+        await send_card(message, error_card("Something went wrong sending that file."), edit=status)
+        return
+
+    try:
+        await status.delete()
+    except Exception:
+        pass
 
 
 @router.message(Command("cplay"))
@@ -148,21 +202,74 @@ async def cmd_skip(message: Message) -> None:
     if not stream_manager.is_playing(chat_id):
         await reply_error(message, "Nothing is playing.")
         return
+
+    if not await _may_skip_now(message):
+        return
+    await _do_skip(message)
+
+
+async def _may_skip_now(message: Message) -> bool:
+    """True if this user can skip outright; otherwise runs the vote."""
+    from bot.services.voteskip import count_listeners, voteskip
+    from bot.utils.guards import is_admin_or_auth, is_sudo
+
+    chat_id = message.chat.id
+    user = message.from_user
+    if not user or not is_group_chat(message):
+        return True
+    if not await voteskip.enabled(chat_id):
+        return True
+
+    current = await queue_manager.get_current(chat_id)
+    # Whoever queued the track may always skip their own request.
+    if current and current.get("requester") == user.full_name:
+        return True
+    if is_sudo(user.id) or await is_admin_or_auth(message.bot, chat_id, user.id):
+        return True
+
+    listeners = await count_listeners(message.bot, chat_id)
+    needed = voteskip.needed(listeners, await voteskip.ratio(chat_id))
+    votes, is_new = voteskip.add_vote(chat_id, user.id, current)
+
+    if votes >= needed:
+        voteskip.reset(chat_id)
+        await send_card(
+            message,
+            success_card(f"Vote passed — skipping. ({votes}/{needed})"),
+        )
+        return True
+
+    if not is_new:
+        await send_card(message, error_card("You have already voted to skip."))
+        return False
+
+    await send_card(
+        message,
+        voteskip_card(votes, needed, current.get("title", "this track") if current else "this track"),
+    )
+    return False
+
+
+async def _do_skip(message: Message) -> None:
+    from bot.services.voteskip import voteskip
+
+    chat_id = message.chat.id
+    voteskip.reset(chat_id)
     next_track = await stream_manager.skip(chat_id)
     if next_track:
-        loop = await queue_manager.get_loop(chat_id)
-        vol = await queue_manager.get_volume(chat_id)
-        card = now_playing_card(
-            next_track["title"],
-            next_track.get("artist", ""),
-            next_track.get("duration"),
-            next_track.get("requester", ""),
-            loop_mode=loop.value,
-            volume=vol,
+        await send_card(
+            message,
+            now_playing_card(
+                next_track,
+                elapsed=0,
+                queue_len=await queue_manager.size(chat_id),
+                volume=await queue_manager.get_volume(chat_id),
+                loop_mode=(await queue_manager.get_loop(chat_id)).value,
+            ),
+            reply_markup=player_panel_kb(True),
         )
-        await message.answer(card, parse_mode="HTML", reply_markup=player_panel_kb(True))
     else:
-        await message.answer("⏹ <b>Queue finished.</b>", parse_mode="HTML")
+        await send_card(message, success_card("Queue finished.", "Add more with /play."))
 
 
 @router.message(Command("stop"))

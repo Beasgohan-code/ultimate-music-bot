@@ -38,10 +38,20 @@ that don't support it yet.
 | **Precision playback** | `/seek 1:30`, `/seekback 15`, `/position`, `/speed 1.25`, `/volume 80`, `/mutevc`, `/unmutevc` |
 | **Looping** | `/loop off\|single\|all\|1-10` |
 | **Playlists** | `/saveplaylist <name>`, `/playlists`, `/playplaylist <name>`, `/delplaylist <name>`, `/fav`, `/favs` |
-| **Extras** | `/lyrics`, `/song` (mp3/mp4 download), `/history`, `/top`, `/mood <vibe>`, `/player` panel, inline mode |
+| **Extras** | `/lyrics`, `/song` (cached MP3 download), `/history`, `/top`, `/mood <vibe>`, `/player` panel, inline mode |
+| **Fair play** | `/voteskip` — non-admins vote to skip; admins and the requester skip instantly |
 
 The **player panel** is an inline keyboard that updates in place — pause, resume,
 skip, loop, shuffle, volume, lyrics and queue without typing a command.
+
+Now-playing announcements render as a **generated image card** — blurred cover
+art, title, artist, requester and a progress bar. Turn it off per chat if you
+prefer plain text.
+
+Downloaded tracks are **cached by Telegram `file_id`**. The first request for a
+song downloads and uploads it; every later request for the same song is a single
+API call with no download at all. Point `STORAGE_CHAT_ID` at a private channel to
+keep those ids valid across restarts.
 
 ### Group management
 
@@ -165,14 +175,10 @@ bot/
 tests/                   integration suite
 ```
 
-## Credits
+## Built with
 
-Design and feature inspiration from
-[AsmSafone/MusicPlayer](https://github.com/AsmSafone/MusicPlayer),
-[TeamYukki/YukkiMusicBot](https://github.com/TeamYukki/YukkiMusicBot),
-[arashnm80/spot-seek-bot](https://github.com/arashnm80/spot-seek-bot), and
-[Miss Rose](https://github.com/Gowtham0625/Miss-Rose-Bot) for the group-management
-semantics. Built on [aiogram](https://github.com/aiogram/aiogram),
-[Pyrogram](https://github.com/pyrogram/pyrogram),
-[PyTgCalls](https://github.com/pytgcalls/pytgcalls) and
-[yt-dlp](https://github.com/yt-dlp/yt-dlp).
+[aiogram](https://github.com/aiogram/aiogram) ·
+[Pyrogram](https://github.com/pyrogram/pyrogram) ·
+[PyTgCalls](https://github.com/pytgcalls/pytgcalls) ·
+[yt-dlp](https://github.com/yt-dlp/yt-dlp) ·
+[Pillow](https://python-pillow.org)

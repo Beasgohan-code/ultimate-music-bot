@@ -115,7 +115,8 @@ async def play_track(
             volume=await queue_manager.get_volume(chat_id),
             loop_mode=(await queue_manager.get_loop(chat_id)).value,
         )
-        await send_card(message, card, reply_markup=player_panel_kb(True), edit=edit_msg)
+        if not await _send_with_thumbnail(message, track, card, edit_msg):
+            await send_card(message, card, reply_markup=player_panel_kb(True), edit=edit_msg)
         return True
 
     try:
@@ -131,3 +132,40 @@ async def play_track(
     card = queued_card(track, position, await queue_manager.size(chat_id))
     await send_card(message, card, reply_markup=player_panel_kb(True), edit=edit_msg)
     return True
+
+
+async def _send_with_thumbnail(message: Message, track: dict, card, edit_msg) -> bool:
+    """Try to send the now-playing card as an image. False -> caller falls back.
+
+    Image cards are opt-out per chat because they cost a render and some
+    groups would rather have a compact text line.
+    """
+    if not await database.get_chat_value(message.chat.id, "thumbnails", True):
+        return False
+    try:
+        from bot.services.thumbnails import now_playing_image
+
+        image = await now_playing_image(track, elapsed=0, bot_name=config.bot_name)
+        if not image:
+            return False
+
+        from aiogram.types import FSInputFile
+
+        caption = card.to_html()
+        if len(caption) > 1024:  # photo captions are capped well below messages
+            caption = caption[:1015].rsplit("\n", 1)[0] + "\n…"
+        await message.answer_photo(
+            FSInputFile(image),
+            caption=caption,
+            parse_mode="HTML",
+            reply_markup=player_panel_kb(True),
+        )
+        if edit_msg:
+            try:
+                await edit_msg.delete()
+            except Exception:
+                pass
+        return True
+    except Exception as exc:
+        logger.debug("Thumbnail card failed, using text: %s", exc)
+        return False

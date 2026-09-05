@@ -607,3 +607,172 @@ def test_every_keyboard_callback_has_a_handler():
         if cb not in handled and not any(cb.startswith(p) for p in prefixes)
     }
     assert not orphans, f"Buttons with no handler: {sorted(orphans)}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Download cache
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_cache_key_is_stable_and_mode_aware():
+    from bot.services.downloads import cache_key
+
+    a = {"id": "abc123", "title": "Song", "source": "Youtube"}
+    b = {"id": "abc123", "title": "Different search text", "source": "youtube"}
+    assert cache_key(a) == cache_key(b), "same track id must hit the same cache slot"
+    assert cache_key(a) != cache_key(a, video=True), "audio and video are separate files"
+
+    # No id: fall back to url, then title — never collide on empty.
+    assert cache_key({"url": "u1"}) != cache_key({"url": "u2"})
+    assert len(cache_key({"id": "x" * 500})) <= 180
+
+
+def test_safe_filename_strips_path_and_control_chars():
+    from bot.services.downloads import safe_filename
+
+    assert "/" not in safe_filename("AC/DC - Back in Black", "mp3")
+    assert safe_filename("../../etc/passwd", "mp3") == "....etcpasswd.mp3"
+    assert safe_filename("", "mp3") == "track.mp3"
+    assert safe_filename("x" * 200, "mp3").endswith(".mp3")
+    assert len(safe_filename("x" * 200, "mp3")) <= 64
+
+
+@pytest.mark.asyncio
+async def test_file_id_roundtrip_through_database():
+    from bot.services.downloads import cache_key, cached_file_id, remember_file_id
+
+    track = {"id": "trk1", "title": "Cached Song", "url": "u", "source": "youtube"}
+    assert await cached_file_id(track) is None
+    await remember_file_id(track, "BQACAgIAAx0EF4k")
+    assert await cached_file_id(track) == "BQACAgIAAx0EF4k"
+    # The video variant must not pick up the audio file_id.
+    assert await cached_file_id(track, video=True) is None
+
+
+@pytest.mark.asyncio
+async def test_stale_file_id_is_cleared_not_reused():
+    """A rotted file_id must be blanked so the next call re-downloads."""
+    from bot.services.database import database
+    from bot.services.downloads import cache_key, cached_file_id, remember_file_id
+
+    track = {"id": "trk2", "title": "Rotten", "url": "u", "source": "youtube"}
+    await remember_file_id(track, "old_id")
+    await database.cache_track(cache_key(track), {**track, "file_id": ""})
+    assert await cached_file_id(track) is None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Vote skip
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_voteskip_threshold_scales_with_listeners():
+    from bot.services.voteskip import MIN_VOTES, voteskip
+
+    # Tiny rooms still need the floor, never more than the people present.
+    assert voteskip.needed(2, 0.5) == MIN_VOTES
+    assert voteskip.needed(3, 0.5) == 2
+    assert voteskip.needed(11, 0.5) == 5     # 10 humans, half
+    assert voteskip.needed(21, 0.5) == 10
+    assert voteskip.needed(11, 1.0) == 10    # unanimous
+    # Never demand more votes than there are humans to cast them.
+    for listeners in range(1, 30):
+        for ratio in (0.1, 0.5, 0.9, 1.0):
+            assert voteskip.needed(listeners, ratio) <= max(1, listeners - 1) or \
+                   voteskip.needed(listeners, ratio) == MIN_VOTES
+
+
+def test_voteskip_counts_once_per_user():
+    from bot.services.voteskip import voteskip
+
+    chat, track = -100555, {"id": "t1", "title": "A"}
+    voteskip.reset(chat)
+
+    assert voteskip.add_vote(chat, 1, track) == (1, True)
+    assert voteskip.add_vote(chat, 1, track) == (1, False), "double vote must not count"
+    assert voteskip.add_vote(chat, 2, track) == (2, True)
+    voteskip.reset(chat)
+    assert voteskip.current(chat, track) is None
+
+
+def test_voteskip_resets_when_the_track_changes():
+    """Votes against one song must not carry over to the next."""
+    from bot.services.voteskip import voteskip
+
+    chat = -100556
+    voteskip.reset(chat)
+    voteskip.add_vote(chat, 1, {"id": "song_a"})
+    voteskip.add_vote(chat, 2, {"id": "song_a"})
+    assert voteskip.current(chat, {"id": "song_a"}).voters == {1, 2}
+
+    # Different track -> the old vote is discarded.
+    assert voteskip.current(chat, {"id": "song_b"}) is None
+    assert voteskip.add_vote(chat, 1, {"id": "song_b"}) == (1, True)
+
+
+def test_voteskip_vote_expires():
+    import time
+
+    from bot.services.voteskip import VOTE_TTL, voteskip
+
+    chat = -100557
+    voteskip.reset(chat)
+    voteskip.add_vote(chat, 1, {"id": "t"})
+    vote = voteskip._votes[chat]
+    vote.started = time.time() - VOTE_TTL - 1
+    assert voteskip.current(chat, {"id": "t"}) is None
+
+
+@pytest.mark.asyncio
+async def test_voteskip_ratio_is_clamped():
+    from bot.services.voteskip import voteskip
+
+    chat = -100558
+    assert await voteskip.set_ratio(chat, 5.0) == 1.0
+    assert await voteskip.set_ratio(chat, 0.0) == 0.1
+    assert await voteskip.set_ratio(chat, 0.6) == 0.6
+    assert await voteskip.ratio(chat) == 0.6
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Thumbnails
+# ─────────────────────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_thumbnail_renders_and_is_cached():
+    from bot.services.thumbnails import now_playing_image
+
+    track = {
+        "id": "thumbtest", "title": "A Reasonably Long Track Title That Wraps",
+        "artist": "Some Artist", "duration": 240, "requester": "Tester", "thumbnail": "",
+    }
+    first = await now_playing_image(track, elapsed=60, bot_name="TestBot")
+    assert first is not None and first.exists()
+    assert first.stat().st_size > 5000, "suspiciously small render"
+
+    mtime = first.stat().st_mtime
+    again = await now_playing_image(track, elapsed=62, bot_name="TestBot")
+    assert again == first and again.stat().st_mtime == mtime, "should reuse the cached render"
+
+
+@pytest.mark.asyncio
+async def test_thumbnail_survives_a_broken_cover_url():
+    from bot.services.thumbnails import now_playing_image
+
+    path = await now_playing_image(
+        {"id": "brokencover", "title": "T", "artist": "A", "duration": 100,
+         "thumbnail": "http://127.0.0.1:1/nope.jpg"},
+        elapsed=0, bot_name="TestBot",
+    )
+    assert path is not None, "a dead cover URL must not stop the card rendering"
+
+
+@pytest.mark.asyncio
+async def test_thumbnail_handles_live_and_missing_duration():
+    from bot.services.thumbnails import now_playing_image
+
+    for duration in (None, 0, "bogus"):
+        path = await now_playing_image(
+            {"id": f"dur{duration}", "title": "Live Stream", "artist": "",
+             "duration": duration, "thumbnail": ""},
+            elapsed=0, bot_name="TestBot",
+        )
+        assert path is not None, f"duration={duration!r} broke the renderer"

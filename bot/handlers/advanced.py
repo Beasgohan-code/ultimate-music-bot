@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import logging
-import os
-import tempfile
 
 from aiogram import Router
 from aiogram.filters import Command
-from aiogram.types import FSInputFile, Message
+from aiogram.types import Message
 
 from bot.keyboards.inline import favorites_kb, mood_kb, player_panel_kb, radio_kb, search_results_kb
 from bot.services.autoleave import auto_leave
@@ -246,55 +244,3 @@ async def cmd_ping(message: Message) -> None:
     )
 
 
-@router.message(Command("download"))
-async def cmd_download(message: Message) -> None:
-    query = extract_query(message)
-    if not query:
-        current = await queue_manager.get_current(message.chat.id)
-        if current:
-            query = current.get("url") or current.get("title", "")
-        else:
-            await reply_error(message, "Usage: /download <song or URL>")
-            return
-
-    status = await message.answer("⬇️ <b>Downloading…</b>", parse_mode="HTML")
-    track = await get_stream_url(query)
-    if not track or not track.get("stream_url", "").startswith("http"):
-        await status.edit_text(error_card("Could not download this track."), parse_mode="HTML")
-        return
-
-    tmp = tempfile.mkdtemp()
-    out_path = os.path.join(tmp, f"{track['title'][:50]}.mp3")
-
-    import asyncio
-    import yt_dlp
-
-    def _dl() -> str | None:
-        opts = {
-            "quiet": True,
-            "format": "bestaudio/best",
-            "outtmpl": out_path.replace(".mp3", ".%(ext)s"),
-            "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3"}],
-        }
-        try:
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                ydl.download([track.get("url") or query])
-            for f in os.listdir(tmp):
-                if f.endswith(".mp3"):
-                    return os.path.join(tmp, f)
-        except Exception:
-            return None
-        return None
-
-    path = await asyncio.get_event_loop().run_in_executor(None, _dl)
-    if not path or not os.path.isfile(path):
-        await status.edit_text(error_card("Download failed."), parse_mode="HTML")
-        return
-
-    await status.delete()
-    await message.answer_audio(
-        FSInputFile(path),
-        title=track["title"],
-        performer=track.get("artist", ""),
-        caption=f"⬇️ {track['title']}",
-    )

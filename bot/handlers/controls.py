@@ -13,7 +13,7 @@ from bot.services.database import database
 from bot.services.queue import LoopMode, queue_manager
 from bot.services.stream import stream_manager
 from bot.utils.guards import is_admin_or_auth, is_group
-from bot.utils.rich import RichCard, b, c, plain, send_card, send_html
+from bot.utils.rich import RichCard, b, c, i, plain, send_card, send_html
 
 logger = logging.getLogger(__name__)
 router = Router(name="controls")
@@ -400,3 +400,63 @@ async def cmd_playplaylist(message: Message, bot: Bot) -> None:
     queued = await queue_manager.add_many(message.chat.id, tracks[1:])
     if queued:
         await send_html(message, f"➕ <b>Queued {queued} more track(s) from “{name}”.</b>")
+
+
+@router.message(Command("voteskip", "vs"))
+async def cmd_voteskip_config(message: Message) -> None:
+    """Show or configure vote-skip for this chat."""
+    from bot.services.voteskip import count_listeners, voteskip
+    from bot.utils.cards import error_card, success_card
+
+    if not is_group(message):
+        await send_card(message, error_card("Vote-skip only applies to groups."))
+        return
+
+    chat_id = message.chat.id
+    args = (message.text or "").split()[1:]
+
+    if not args:
+        enabled = await voteskip.enabled(chat_id)
+        ratio = await voteskip.ratio(chat_id)
+        listeners = await count_listeners(message.bot, chat_id)
+        card = (
+            RichCard()
+            .heading([plain("🗳 "), b("Vote Skip")], size=1)
+            .table(
+                ["Setting", "Value"],
+                [
+                    ["Status", "enabled" if enabled else "disabled"],
+                    ["Threshold", f"{int(ratio * 100)}% of listeners"],
+                    ["Listeners now", str(listeners)],
+                    ["Votes needed", str(voteskip.needed(listeners, ratio))],
+                ],
+            )
+            .para([i("Admins and the track's requester always skip instantly.")])
+            .footer("/voteskip on|off  •  /voteskip 60  (percent)")
+        )
+        await send_card(message, card)
+        return
+
+    if not await _can_control(message):
+        return
+
+    arg = args[0].lower()
+    if arg in {"on", "enable", "yes"}:
+        await voteskip.set_enabled(chat_id, True)
+        await send_card(message, success_card("Vote-skip enabled."))
+        return
+    if arg in {"off", "disable", "no"}:
+        await voteskip.set_enabled(chat_id, False)
+        await send_card(message, success_card("Vote-skip disabled.", "Anyone can now skip freely."))
+        return
+
+    try:
+        pct = float(arg.rstrip("%"))
+    except ValueError:
+        await send_card(message, error_card("Usage: /voteskip on|off|<percent>"))
+        return
+    if not 10 <= pct <= 100:
+        await send_card(message, error_card("Pick a percentage between 10 and 100."))
+        return
+    ratio = await voteskip.set_ratio(chat_id, pct / 100)
+    await send_card(message, success_card(f"Vote threshold set to {int(ratio * 100)}% of listeners."))

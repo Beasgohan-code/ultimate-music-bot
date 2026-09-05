@@ -12,6 +12,11 @@ def _icon(icon: str):
     return plain(f"{icon} ")
 
 
+def _clip(text: str, limit: int) -> str:
+    text = str(text or "")
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
 def fmt_duration(seconds: int | None) -> str:
     if not seconds or seconds < 0:
         return "—"
@@ -293,6 +298,20 @@ def welcome_card(
             ]
         )
         .footer("Tap ✦ Help for every command  •  ✦ Support if you get stuck")
+    )
+
+
+def voteskip_card(votes: int, needed: int, title: str) -> RichCard:
+    """Progress card shown while a skip vote is open."""
+    filled = "🟩" * votes
+    empty = "⬜" * max(0, needed - votes)
+    return (
+        RichCard()
+        .heading([_icon("🗳"), b("Vote to Skip")], size=1)
+        .para([plain("Skipping "), b(_clip(title, 60)), plain("?")])
+        .para([plain(filled + empty), plain(f"  {votes}/{needed}")])
+        .para([i(f"{needed - votes} more vote(s) needed.")])
+        .footer("Send /skip to add your vote  •  admins can skip instantly")
     )
 
 
