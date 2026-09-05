@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import logging
 import os
 import re
@@ -12,7 +14,7 @@ from urllib.parse import urlparse
 
 import yt_dlp
 
-from bot.config import config
+from bot.config import DATA_DIR, config
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +80,47 @@ def _player_clients() -> list[str]:
     return ["default", *_EXTRA_PLAYER_CLIENTS]
 
 
+def materialize_cookies() -> str:
+    """Return a path to a cookie jar, writing COOKIES_DATA out if needed.
+
+    Cookies are the one reliable way past a datacenter-IP block, but PaaS
+    hosts give you no persistent place to put a file and committing one to the
+    repo leaks a live login. So accept the jar as an env var too — raw
+    Netscape text or base64 of it — and materialize it at runtime.
+    """
+    if config.cookies_file and os.path.isfile(config.cookies_file):
+        return config.cookies_file
+
+    raw = config.cookies_data
+    if not raw:
+        return ""
+
+    text = raw
+    if "# Netscape" not in raw and "\t" not in raw:
+        # Base64 keeps multi-line jars intact through dashboards that mangle
+        # newlines, so accept that encoding transparently.
+        try:
+            text = base64.b64decode(raw, validate=True).decode("utf-8", "replace")
+        except (binascii.Error, ValueError):
+            text = raw
+
+    text = text.replace("\\n", "\n").replace("\\t", "\t")
+    if not text.endswith("\n"):
+        text += "\n"
+
+    try:
+        target = DATA_DIR / "cookies.txt"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        # Only rewrite when the contents changed, to avoid pointless churn.
+        if not target.exists() or target.read_text(errors="replace") != text:
+            target.write_text(text)
+            target.chmod(0o600)
+        return str(target)
+    except OSError as exc:
+        logger.error("Could not write COOKIES_DATA to disk: %s", exc)
+        return ""
+
+
 def _ydl_common() -> dict[str, Any]:
     """Options every extraction shares: auth, proxy, JS runtime, clients."""
     opts: dict[str, Any] = {}
@@ -93,8 +136,9 @@ def _ydl_common() -> dict[str, Any]:
     # Cookies from a logged-in account are the single most effective way past
     # a datacenter-IP block. These were already read from the environment but
     # only ever applied to /song downloads, never to streaming or search.
-    if config.cookies_file and os.path.isfile(config.cookies_file):
-        opts["cookiefile"] = config.cookies_file
+    cookies = materialize_cookies()
+    if cookies:
+        opts["cookiefile"] = cookies
     if config.ytdlp_proxy:
         opts["proxy"] = config.ytdlp_proxy
     return opts

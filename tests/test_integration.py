@@ -1333,3 +1333,82 @@ def test_youtube_clients_env_var_overrides_the_defaults(monkeypatch):
 
     opts = music._ydl_common()
     assert opts["extractor_args"]["youtube"]["player_client"] == ["tv", "ios"]
+
+
+def test_cookies_can_be_supplied_without_a_file(monkeypatch, tmp_path):
+    """PaaS hosts have nowhere to put a cookie file, and committing one leaks it."""
+    import base64
+    import dataclasses
+
+    from bot.services import music
+
+    jar = "# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tsecret\n"
+
+    monkeypatch.setattr(music, "DATA_DIR", tmp_path)
+    for encoding in (jar, base64.b64encode(jar.encode()).decode(), jar.replace("\n", "\\n")):
+        monkeypatch.setattr(
+            music,
+            "config",
+            dataclasses.replace(music.config, cookies_file="", cookies_data=encoding),
+        )
+        path = music.materialize_cookies()
+        assert path, "no cookie jar produced"
+        written = Path(path).read_text()
+        assert written.startswith("# Netscape"), f"not a valid jar: {written[:40]!r}"
+        assert "SID\tsecret" in written
+        assert music._ydl_common()["cookiefile"] == path
+
+
+def test_a_real_cookie_file_wins_over_inline_data(monkeypatch, tmp_path):
+    import dataclasses
+
+    from bot.services import music
+
+    real = tmp_path / "real.txt"
+    real.write_text("# Netscape HTTP Cookie File\n")
+    monkeypatch.setattr(music, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(
+        music,
+        "config",
+        dataclasses.replace(music.config, cookies_file=str(real), cookies_data="ignored"),
+    )
+    assert music.materialize_cookies() == str(real)
+
+
+def test_missing_cookies_are_not_an_error(monkeypatch, tmp_path):
+    """No cookies configured is the normal case, not a failure."""
+    import dataclasses
+
+    from bot.services import music
+
+    monkeypatch.setattr(music, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(
+        music, "config", dataclasses.replace(music.config, cookies_file="", cookies_data="")
+    )
+    assert music.materialize_cookies() == ""
+    assert "cookiefile" not in music._ydl_common()
+
+
+def test_build_id_identifies_the_running_code(monkeypatch):
+    """A stale deploy is otherwise indistinguishable from a broken fix."""
+    import importlib
+
+    main = importlib.import_module("main")
+
+    monkeypatch.setenv("RENDER_GIT_COMMIT", "abcdef1234567890")
+    assert main.build_id() == "abcdef1"
+
+    monkeypatch.delenv("RENDER_GIT_COMMIT", raising=False)
+    assert main.build_id(), "build id should fall back to the local checkout"
+
+
+def test_downloads_share_the_streaming_extraction_config():
+    """/song hits the same YouTube gate, so it needs the same workarounds."""
+    import inspect
+
+    from bot.services import downloads
+
+    source = inspect.getsource(downloads)
+    assert "materialize_cookies" in source
+    assert "_player_clients" in source
+    assert "_js_runtimes" in source

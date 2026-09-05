@@ -185,10 +185,24 @@ order of effectiveness:
 | Setting | What it does |
 |---|---|
 | `COOKIES_FILE` | Cookies exported from a logged-in browser (Netscape format). Most effective, and also unlocks age-restricted videos. Use a throwaway account |
+| `COOKIES_DATA` | The same jar inline, for hosts with nowhere to put a file. Raw or base64; written to `data/cookies.txt` at startup |
 | `YTDLP_PROXY` | Routes extraction through a residential proxy |
 | `YTDLP_JS_RUNTIME` | Pins the JS runtime. Blank autodetects and falls back to bundled Node; `none` disables |
 
 Cookies and proxy apply to streaming, search *and* `/song` downloads.
+
+The startup log states what is active, so you never have to guess:
+
+```
+build caf0e5f | python 3.12
+YouTube cookies: loaded
+YouTube player clients: default, android_vr, tv, mweb, ios
+yt-dlp JS runtime: node
+```
+
+The `build` line is the deployed commit. If it does not match what you just
+pushed, the host is running older code and no amount of debugging the current
+source will explain the behaviour.
 
 ## Health checks
 

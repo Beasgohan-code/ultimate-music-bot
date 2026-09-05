@@ -133,15 +133,20 @@ def _ytdl_download(track: dict[str, Any], target_dir: Path, video: bool) -> Path
             "socket_timeout": 30,
         }
     )
-    if config.cookies_file and os.path.isfile(config.cookies_file):
-        opts["cookiefile"] = config.cookies_file
+    cookies = music.materialize_cookies()
+    if cookies:
+        opts["cookiefile"] = cookies
     if config.ytdlp_proxy:
         opts["proxy"] = config.ytdlp_proxy
-    # Same JS-runtime requirement as streaming: without one, yt-dlp tries a
-    # single YouTube player client and fails on datacenter IPs.
+    # Same JS-runtime and client-fallback requirements as streaming: without
+    # them yt-dlp tries a single YouTube player client and fails on
+    # datacenter IPs.
     runtimes = music._js_runtimes()
     if runtimes:
         opts["js_runtimes"] = runtimes
+    clients = music._player_clients()
+    if clients:
+        opts["extractor_args"] = {"youtube": {"player_client": clients}}
 
     source = track.get("url") or track.get("title", "")
     with yt_dlp.YoutubeDL(opts) as ydl:

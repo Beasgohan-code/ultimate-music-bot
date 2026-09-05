@@ -119,10 +119,38 @@ ADMIN_COMMANDS = PUBLIC_COMMANDS + [
 ]
 
 
+def build_id() -> str:
+    """Identify the running code, so a stale deploy is obvious at a glance.
+
+    Render (and most PaaS) expose the deployed commit as an env var. Falling
+    back to the local git checkout keeps this useful in development.
+    """
+    for var in ("RENDER_GIT_COMMIT", "SOURCE_VERSION", "GIT_COMMIT", "HEROKU_SLUG_COMMIT"):
+        sha = os.getenv(var)
+        if sha:
+            return sha[:7]
+    try:
+        import subprocess
+
+        out = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+        )
+        if out.returncode == 0 and out.stdout.strip():
+            return out.stdout.strip()
+    except Exception:
+        pass
+    return "unknown"
+
+
 def _banner() -> None:
     logger.info("=" * 62)
     logger.info("  %s", config.bot_name)
     logger.info("  Music streaming + group management for Telegram")
+    logger.info("  build %s | python %d.%d", build_id(), *sys.version_info[:2])
     logger.info("=" * 62)
 
 
@@ -293,7 +321,19 @@ def _check_js_runtime() -> bool:
     """Report which JS runtime yt-dlp will use, installing one if needed."""
     _ensure_node()
 
-    from bot.services.music import _js_runtimes
+    from bot.services.music import _js_runtimes, _player_clients, materialize_cookies
+
+    # State the anti-block configuration outright. When extraction fails, the
+    # first question is always "were cookies actually loaded?" — answer it in
+    # the log rather than making someone reason about it.
+    if materialize_cookies():
+        logger.info("YouTube cookies: loaded")
+    else:
+        logger.info(
+            "YouTube cookies: none (set COOKIES_FILE or COOKIES_DATA if "
+            "extraction gets blocked)"
+        )
+    logger.info("YouTube player clients: %s", ", ".join(_player_clients()))
 
     runtimes = _js_runtimes()
     if runtimes:

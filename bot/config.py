@@ -171,6 +171,10 @@ class Config:
         default_factory=lambda: _parse_bool(os.getenv("ENABLE_DOWNLOADS"), True)
     )
     cookies_file: str = field(default_factory=lambda: _clean(os.getenv("COOKIES_FILE")))
+    # Cookie jar contents inline, for hosts with no writable repo to commit a
+    # file into. Accepts raw Netscape text or base64 of it; written to disk at
+    # startup and used as COOKIES_FILE.
+    cookies_data: str = field(default_factory=lambda: (os.getenv("COOKIES_DATA") or "").strip())
     ytdlp_proxy: str = field(default_factory=lambda: _clean(os.getenv("YTDLP_PROXY")))
     # JS runtime for yt-dlp's YouTube challenge solver. Blank = autodetect
     # (deno, node, bun, quickjs); "none" disables. Without one, yt-dlp tries a
