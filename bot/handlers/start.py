@@ -6,25 +6,24 @@ from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
 from aiogram.types import CallbackQuery, Message
 
+from bot.config import config
 from bot.keyboards.inline import main_menu_kb, settings_kb
-from bot.utils.formatters import help_card, welcome_message
+from bot.utils.cards import welcome_card
+from bot.utils.formatters import welcome_message
+from bot.utils.rich import send_card
 
 router = Router(name="start")
 
 
 @router.message(CommandStart())
 async def cmd_start(message: Message) -> None:
-    name = (await message.bot.get_me()).first_name
-    await message.answer(
-        welcome_message(name),
-        parse_mode="HTML",
+    me = await message.bot.get_me()
+    name = config.bot_name or me.first_name
+    await send_card(
+        message,
+        welcome_card(name, me.username or ""),
         reply_markup=main_menu_kb(),
     )
-
-
-@router.message(Command("help"))
-async def cmd_help(message: Message) -> None:
-    await message.answer(help_card(), parse_mode="HTML", reply_markup=main_menu_kb())
 
 
 @router.message(Command("panel"))
@@ -36,7 +35,16 @@ async def cmd_panel(message: Message) -> None:
 
 @router.callback_query(F.data == "menu:help")
 async def cb_help(query: CallbackQuery) -> None:
-    await query.message.edit_text(help_card(), parse_mode="HTML", reply_markup=main_menu_kb())
+    from bot.handlers.settings import _help_root_card, HELP_CATEGORIES
+    from bot.keyboards.moderation import help_menu_kb
+
+    cats = [(k, v[0]) for k, v in HELP_CATEGORIES.items()]
+    try:
+        await query.message.edit_text(
+            _help_root_card().to_html(), parse_mode="HTML", reply_markup=help_menu_kb(cats)
+        )
+    except Exception:
+        pass
     await query.answer()
 
 
@@ -54,12 +62,15 @@ async def cb_settings(query: CallbackQuery) -> None:
 
 @router.callback_query(F.data == "menu:back")
 async def cb_back(query: CallbackQuery) -> None:
-    name = (await query.bot.get_me()).first_name
-    await query.message.edit_text(
-        welcome_message(name),
-        parse_mode="HTML",
-        reply_markup=main_menu_kb(),
-    )
+    me = await query.bot.get_me()
+    try:
+        await query.message.edit_text(
+            welcome_card(config.bot_name or me.first_name, me.username or "").to_html(),
+            parse_mode="HTML",
+            reply_markup=main_menu_kb(),
+        )
+    except Exception:
+        pass
     await query.answer()
 
 

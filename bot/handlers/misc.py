@@ -25,9 +25,15 @@ async def cmd_join(message: Message) -> None:
     if not assistant:
         await reply_error(message, "Assistant username not configured.")
         return
+    steps = (
+        f"1. Add @{assistant} to your group\n"
+        f"2. Promote it with the 'manage voice chats' permission\n"
+        f"3. Start a voice chat\n"
+        f"4. Use /play <song>"
+    )
     await message.answer(
         f"👥 {bold('Add Assistant to Group')}\n\n"
-        f"{bq(f'1. Add @{assistant} to your group\n2. Promote with VC manage permission\n3. Start a voice chat\n4. Use /play <song>')}\n\n"
+        f"{bq(steps)}\n\n"
         f"{italic('The assistant account streams audio/video into voice chats.')}",
         parse_mode="HTML",
     )
@@ -115,17 +121,8 @@ async def cmd_active(message: Message) -> None:
         status = "⏹ Idle"
 
     now = current["title"] if current else "—"
+    summary = f"Status: {status}\nNow: {now}\nQueue: {q_len} tracks"
     await message.answer(
-        f"📡 {bold('Active Status')}\n\n"
-        f"{bq(f'Status: {status}\nNow: {now}\nQueue: {q_len} tracks')}",
-        parse_mode="HTML",
-    )
-
-
-@router.message(Command("id"))
-async def cmd_id(message: Message) -> None:
-    await message.answer(
-        f"🆔 Chat ID: <code>{message.chat.id}</code>\n"
-        f"👤 Your ID: <code>{message.from_user.id if message.from_user else '—'}</code>",
+        f"📡 {bold('Active Status')}\n\n{bq(summary)}",
         parse_mode="HTML",
     )

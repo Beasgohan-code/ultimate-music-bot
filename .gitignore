@@ -12,3 +12,16 @@ venv/
 tmp/
 temp/
 data/
+
+# Local secrets — never commit
+env
+env.*
+.env
+.env.*
+!.env.example
+*.session*
+data/
+downloads/
+cache/
+*.log
+.pytest_cache/

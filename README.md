@@ -1,105 +1,109 @@
-# Ultimate Music Bot
+<h1 align="center">🎵 Ultimate Music Bot</h1>
 
-A premium Telegram music & video bot with voice chat streaming, live streams, lyrics, song suggestions, and a modern HTML UI with styled buttons.
+<p align="center">
+  <b>A Telegram voice-chat music player and full group-management suite in one bot.</b><br>
+  <sub>aiogram 3 · Pyrogram assistant · PyTgCalls · yt-dlp · Bot API rich messages</sub>
+</p>
 
-## Features
+---
 
-### Playback
-- **Audio streaming** — YouTube search, URLs, uploaded files (MP3, M4A, OGG, FLAC)
-- **Video streaming** — MKV, MP4, WebM up to 720p in voice chats
-- **Live streams** — m3u8, YouTube Live via `/vstream`
-- **Queue system** — Auto-advance, shuffle, loop (off/single/all)
-- **Volume control** — 1–200% with live adjustment
+## What this is
 
-### Commands
-| Command | Description |
-|---------|-------------|
-| `/play` | Play audio in voice chat |
-| `/song` | Search & play a song |
-| `/cplay` | Channel/group play (queues if playing) |
-| `/vplay` | Stream video (MKV/MP4) |
-| `/vstream` | Live stream (m3u8/YouTube Live) |
-| `/search` | Interactive search with buttons |
-| `/lyrics` | Get song lyrics |
-| `/suggest` | Song recommendations |
-| `/pause` `/resume` `/skip` `/stop` | Playback controls |
-| `/queue` `/shuffle` `/loop` `/clear` | Queue management |
-| `/volume` | Set volume (1–200) |
-| `/now` | Current track info |
-| `/panel` | Open control panel |
-| `/help` | Full command list |
+Most Telegram bots do one thing. This one merges the two most-requested roles in a
+single process:
 
-### Premium UI
-- HTML formatting with **bold**, *italic*, `code`, and blockquotes
-- Styled inline buttons (primary/success/danger)
-- Interactive control panel with full button controls
-- **OS Dashboard** (`/os`) — premium system-style control center
-- Inline search mode — type `@YourBot song name` in any chat
+- **A voice-chat music player** — YouTube search & links, direct files, radio/live
+  streams, video streams, queues, loops, seek, per-chat volume, saved playlists,
+  lyrics, and downloads.
+- **A Miss-Rose-class group manager** — warns, mutes, bans, locks, antiflood,
+  notes, filters, blacklists, welcome/goodbye, rules, AFK, reports, and
+  per-command disabling.
 
-### New in v2
-| Feature | Command |
-|---------|---------|
-| YouTube playlists | `/playlist <url>` |
-| Force play now | `/playnow <song>` |
-| Play next in queue | `/playnext <song>` |
-| Remove from queue | `/remove <#>` |
-| Internet radio (10 stations) | `/radio` |
-| Mood playlists | `/mood chill/party/workout…` |
-| Favorites | `/fav` `/favs` `/unfav` |
-| Download MP3 | `/download <song>` |
-| Play history | `/history` |
-| Bot stats | `/stats` |
-| OS dashboard | `/os` |
-| Latency check | `/ping` |
-| Inline search | `@bot <query>` |
-| Admin commands | `/sudo` `/astop` `/broadcast` |
-| Auto-leave idle VC | Configurable via `.env` |
-| Playback speed | `/speed 0.5–2.0` |
-| Track info | `/info` |
-| Supported sources | `/source` |
-| Docker deploy | `docker compose up -d` |
+Everything the bot says is rendered with the **Bot API rich-message system**
+(`sendRichMessage` / `InputRichMessage`), so player cards, help pages and settings
+panels use real headings, tables, checklists, collapsible blockquotes and dividers
+instead of emoji-and-newline soup — with an automatic HTML fallback for clients
+that don't support it yet.
 
-## Requirements
+---
 
-- Python 3.10+
-- FFmpeg installed and in PATH
-- Telegram Bot Token ([@BotFather](https://t.me/BotFather))
-- API ID & Hash ([my.telegram.org](https://my.telegram.org))
-- A Telegram user account for the assistant (joins voice chats)
+## Feature tour
 
-## Quick Start
+### Music
 
-### 1. Clone & install
+| | |
+|---|---|
+| **Play anything** | `/play <song or url>`, `/vplay` (video), `/cplay` (channel), `/playnow`, `/playnext`, `/radio`, or reply to any audio/video file |
+| **Queue control** | `/queue` (paginated), `/skip [n]`, `/skipto <n>`, `/move <a> <b>`, `/remove <n>`, `/shuffle`, `/clear`, `/stop` |
+| **Precision playback** | `/seek 1:30`, `/seekback 15`, `/position`, `/speed 1.25`, `/volume 80`, `/mutevc`, `/unmutevc` |
+| **Looping** | `/loop off\|single\|all\|1-10` |
+| **Playlists** | `/saveplaylist <name>`, `/playlists`, `/playplaylist <name>`, `/delplaylist <name>`, `/fav`, `/favs` |
+| **Extras** | `/lyrics`, `/song` (mp3/mp4 download), `/history`, `/top`, `/mood <vibe>`, `/player` panel, inline mode |
+
+The **player panel** is an inline keyboard that updates in place — pause, resume,
+skip, loop, shuffle, volume, lyrics and queue without typing a command.
+
+### Group management
+
+| | |
+|---|---|
+| **Warns** | `/warn`, `/dwarn`, `/warns`, `/resetwarn`, `/warnlimit <n>`, `/warnmode ban\|mute\|kick` |
+| **Restrictions** | `/ban`, `/tban 2h`, `/unban`, `/kick`, `/mute`, `/tmute 30m`, `/unmute` |
+| **Locks** | `/lock <type>`, `/unlock`, `/locks`, `/locktypes` — 20 types incl. `url`, `forward`, `sticker`, `all` |
+| **Antiflood** | `/setflood <n>`, `/flood`, with mute/kick/ban escalation |
+| **Notes & filters** | `/save`, `/get`, `#note`, `/notes`, `/clearnote`, `/filter`, `/stop <word>`, `/filters` |
+| **Blacklist** | `/addblacklist <word>`, `/blacklist`, `/rmblacklist` — word-boundary safe, supports `word*` |
+| **Greetings** | `/setwelcome`, `/setgoodbye`, `/welcome on\|off`, `/cleanwelcome` with `{first} {mention} {chatname}` placeholders |
+| **Misc** | `/rules`, `/setrules`, `/afk`, `/report`, `/purge`, `/pin`, `/promote`, `/settitle`, `/admins`, `/id`, `/disable <cmd>` |
+
+### Owner & sudo
+
+`/broadcast` (with `-users` / `-pin` flags), `/gban`, `/gbanlist`, `/blacklistchat`,
+`/maintenance`, `/stopall`, `/activevc`, `/logs`, `/sysinfo`, `/sudolist`.
+
+---
+
+## Setup
+
+### 1. Requirements
+
+- Python **3.10+**
+- **FFmpeg** on `PATH` (required — this is what actually encodes the stream)
+- A Telegram **bot token** and a **user account** to act as the streaming assistant
 
 ```bash
+# Debian/Ubuntu
+sudo apt install ffmpeg python3-pip
+```
+
+### 2. Install
+
+```bash
+git clone https://github.com/Beasgohan-code/ultimate-music-bot
 cd ultimate-music-bot
+python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 2. Configure
+### 3. Configure
 
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env` with your credentials:
+Fill in the four required values:
 
-```env
-BOT_TOKEN=your_bot_token
-API_ID=12345678
-API_HASH=your_api_hash
-SESSION_STRING=your_session_string
-ASSISTANT_USERNAME=your_assistant_username
-SUDO_USERS=your_telegram_user_id
-```
+| Variable | Where to get it |
+|---|---|
+| `BOT_TOKEN` | [@BotFather](https://t.me/BotFather) |
+| `API_ID` / `API_HASH` | [my.telegram.org](https://my.telegram.org) → API development tools |
+| `SESSION_STRING` | run `python session_generator.py` and log in as the assistant account |
 
-### 3. Generate session string
+`.env.example` documents every other option — quality, limits, auto-leave, Spotify,
+MongoDB, the web port and more.
 
-```bash
-python session_generator.py
-```
-
-Log in with your **assistant account** (not the bot). Copy the output into `SESSION_STRING` in `.env`.
+> **Never commit your `.env`.** The session string is a full login to the assistant
+> account. If one leaks, revoke it immediately in Telegram → Settings → Devices.
 
 ### 4. Run
 
@@ -107,44 +111,68 @@ Log in with your **assistant account** (not the bot). Copy the output into `SESS
 python main.py
 ```
 
-Or with Docker:
+### 5. Use it
 
-```bash
-docker compose up -d
-```
-
-### 5. Use in a group
-
-1. Add the bot and the assistant account to your group
-2. Promote both with permission to manage voice chats
-3. Start a voice chat
-4. Send `/play never gonna give you up` or tap the buttons
-
-## Project Structure
-
-```
-ultimate-music-bot/
-├── main.py                 # Entry point
-├── session_generator.py    # Generate assistant session
-├── bot/
-│   ├── config.py           # Configuration
-│   ├── handlers/           # Command & callback handlers
-│   ├── keyboards/          # Premium inline keyboards
-│   ├── services/           # Music, queue, stream, lyrics
-│   └── utils/              # Formatters & helpers
-├── assistant/
-│   └── client.py           # Pyrogram userbot
-├── requirements.txt
-└── .env.example
-```
-
-## Tech Stack
-
-- [aiogram 3](https://docs.aiogram.dev/) — Modern async Telegram bot framework
-- [Pyrogram](https://docs.pyrogram.org/) — MTProto userbot for voice chats
-- [py-tgcalls](https://github.com/pytgcalls/pytgcalls) — WebRTC voice chat streaming
-- [yt-dlp](https://github.com/yt-dlp/yt-dlp) — Media extraction from YouTube & more
-- FFmpeg — Audio/video transcoding
+1. Add the **bot** to your group and promote it to admin (delete messages, ban
+   users, manage voice chats).
+2. Add the **assistant account** to the same group, or just run `/join` and it will
+   invite itself.
+3. Start a voice chat, then `/play never gonna give you up`.
 
 ---
 
+## Storage
+
+Works with **zero database setup** — state lives in `data/*.json`. Set `MONGO_URI`
+and the same code paths switch to MongoDB automatically, which is what you want for
+multi-instance or ephemeral-filesystem hosts. `/sysinfo` reports the active backend.
+
+## Health checks
+
+With `WEB_ENABLED=true` the bot serves a live status page on `WEB_PORT`:
+
+- `GET /` — dashboard with uptime, active voice chats and what's playing where
+- `GET /health` — JSON for uptime monitors and platform health checks
+- `GET /api/stats` — JSON counters
+
+## Testing
+
+```bash
+python -m pytest tests/ -q
+```
+
+Covers rich rendering and HTML escaping, command-routing conflicts, queue and loop
+semantics, warn escalation, word-boundary blacklist matching, lock propagation,
+duration parsing, placeholder injection safety, and locale integrity.
+
+---
+
+## Project layout
+
+```
+main.py                  entry point — logging, routers, command scopes, shutdown
+bot/
+  config.py              env parsing, validation, warnings
+  handlers/              play · controls · advanced · moderation · grouptools
+                         settings · admin · callbacks · inline_mode · start · misc
+  services/              stream (PyTgCalls) · queue · database · moderation
+                         i18n · lyrics · history · stats · autoleave
+  middlewares/           gatekeeper (bans, throttle, disabled cmds) · enforcement
+  utils/                 rich (card builder) · cards · guards · formatters
+  keyboards/             inline player, settings, help, moderation
+  locales/               en · es · hi · ru
+  web.py                 status page & health endpoints
+tests/                   integration suite
+```
+
+## Credits
+
+Design and feature inspiration from
+[AsmSafone/MusicPlayer](https://github.com/AsmSafone/MusicPlayer),
+[TeamYukki/YukkiMusicBot](https://github.com/TeamYukki/YukkiMusicBot),
+[arashnm80/spot-seek-bot](https://github.com/arashnm80/spot-seek-bot), and
+[Miss Rose](https://github.com/Gowtham0625/Miss-Rose-Bot) for the group-management
+semantics. Built on [aiogram](https://github.com/aiogram/aiogram),
+[Pyrogram](https://github.com/pyrogram/pyrogram),
+[PyTgCalls](https://github.com/pytgcalls/pytgcalls) and
+[yt-dlp](https://github.com/yt-dlp/yt-dlp).

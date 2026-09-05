@@ -285,9 +285,14 @@ def os_dashboard_card(
 
     recent_lines = "\n".join(f"• {h.get('title', '?')}" for h in recent[:3]) or "—"
 
+    summary = (
+        f"Status: {status}\n"
+        f"Queue: {queue_len} tracks\n"
+        f"Loop: {loop_mode} • Vol: {volume}%"
+    )
     return (
         f"🖥 {bold('Music OS Dashboard')}\n\n"
-        f"{bq(f'Status: {status}\nQueue: {queue_len} tracks\nLoop: {loop_mode} • Vol: {volume}%')}\n\n"
+        f"{bq(summary)}\n\n"
         f"▶️ {bold('Now Playing')}\n"
         f"{bq(now_block)}\n\n"
         f"🕐 {bold('Recent')}\n"

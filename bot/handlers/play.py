@@ -15,9 +15,10 @@ from bot.services.autoleave import auto_leave
 from bot.services.music import get_stream_url, is_live_url, is_url, search_youtube
 from bot.services.queue import queue_manager
 from bot.services.stream import stream_manager
-from bot.utils.formatters import error_card, now_playing_card, search_results_card
 from bot.utils.helpers import ensure_assistant_in_chat, extract_query, is_group_chat, reply_error
-from bot.utils.play_helpers import play_track
+from bot.utils.cards import error_card, now_playing_card, queue_card, search_card
+from bot.utils.play_helpers import can_play, play_track
+from bot.utils.rich import send_card, send_html
 
 logger = logging.getLogger(__name__)
 router = Router(name="play")
@@ -31,10 +32,19 @@ async def _resolve_and_play(
     live: bool = False,
     queue_only: bool = False,
 ) -> None:
+    if not await can_play(message):
+        return
     status = await message.answer("⏳ <b>Loading media…</b>", parse_mode="HTML")
     track = await get_stream_url(query, video=video, live=live)
     if not track:
-        await status.edit_text(error_card("Could not find or extract media."), parse_mode="HTML")
+        await send_card(
+            message,
+            error_card(
+                "I could not find or extract that media.",
+                "Try a different search term or paste a direct link.",
+            ),
+            edit=status,
+        )
         return
     await play_track(
         message, track,
@@ -100,16 +110,17 @@ async def cmd_search(message: Message) -> None:
     status = await message.answer("🔍 <b>Searching…</b>", parse_mode="HTML")
     results = await search_youtube(query, limit=8)
     if not results:
-        await status.edit_text(error_card("No results found."), parse_mode="HTML")
+        await send_card(message, error_card("No results found.", "Try different keywords."), edit=status)
         return
 
     from bot.utils.helpers import cache_search_results
 
     cache_search_results(results)
-    await status.edit_text(
-        search_results_card(query, results),
-        parse_mode="HTML",
+    await send_card(
+        message,
+        search_card(query, results),
         reply_markup=search_results_kb(results, prefix="play"),
+        edit=status,
     )
 
 
@@ -168,37 +179,27 @@ async def cmd_queue(message: Message) -> None:
     await send_queue_view(message)
 
 
-@router.message(Command("now"))
+@router.message(Command("now", "np", "current"))
 async def cmd_now(message: Message) -> None:
-    current = await queue_manager.get_current(message.chat.id)
+    chat_id = message.chat.id
+    current = await queue_manager.get_current(chat_id)
     if not current:
-        await reply_error(message, "Nothing is playing right now.")
+        await send_card(message, error_card("Nothing is playing right now.", "Start with /play <song>."))
         return
-    loop = await queue_manager.get_loop(message.chat.id)
-    vol = await queue_manager.get_volume(message.chat.id)
     card = now_playing_card(
-        current["title"],
-        current.get("artist", ""),
-        current.get("duration"),
-        current.get("requester", ""),
-        video=current.get("is_video", False),
-        is_live=current.get("is_live", False),
-        loop_mode=loop.value,
-        volume=vol,
+        current,
+        elapsed=stream_manager.elapsed(chat_id),
+        queue_len=await queue_manager.size(chat_id),
+        volume=await queue_manager.get_volume(chat_id),
+        loop_mode=(await queue_manager.get_loop(chat_id)).value,
     )
-    await message.answer(card, parse_mode="HTML", reply_markup=player_panel_kb(stream_manager.is_playing(message.chat.id)))
+    await send_card(message, card, reply_markup=player_panel_kb(stream_manager.is_playing(chat_id)))
 
 
 @router.message(Command("shuffle"))
 async def cmd_shuffle(message: Message) -> None:
     await queue_manager.shuffle(message.chat.id)
     await message.answer("🔀 <b>Queue shuffled!</b>", parse_mode="HTML")
-
-
-@router.message(Command("loop"))
-async def cmd_loop(message: Message) -> None:
-    mode = await queue_manager.toggle_loop(message.chat.id)
-    await message.answer(f"🔁 Loop mode: <b>{mode.value.title()}</b>", parse_mode="HTML")
 
 
 @router.message(Command("clear"))

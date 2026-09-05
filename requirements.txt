@@ -1,5 +1,5 @@
 # Telegram Bot
-aiogram>=3.20.0,<4.0.0
+aiogram>=3.31.0,<4.0.0  # 3.31 adds sendRichMessage / InputRichMessage
 pyrogram>=2.0.106
 TgCrypto>=1.2.5
 

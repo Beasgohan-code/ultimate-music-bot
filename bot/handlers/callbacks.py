@@ -11,13 +11,24 @@ from bot.keyboards.inline import player_panel_kb, queue_pagination_kb
 from bot.services.music import get_stream_url
 from bot.services.queue import queue_manager
 from bot.services.stream import stream_manager
-from bot.utils.formatters import error_card, now_playing_card, queue_card
+from bot.utils.cards import error_card, now_playing_card, queue_card
+from bot.utils.rich import send_card
 from bot.utils.helpers import get_cached_track
 
 logger = logging.getLogger(__name__)
 router = Router(name="callbacks")
 
 PER_PAGE = 8
+
+
+async def _edit_card(query: CallbackQuery, card, reply_markup=None) -> None:
+    """Edit a callback's message with a RichCard, ignoring 'not modified'."""
+    try:
+        await query.message.edit_text(
+            card.to_html(), parse_mode="HTML", reply_markup=reply_markup
+        )
+    except Exception:
+        pass
 
 
 async def send_player_panel(message: Message) -> None:
@@ -28,23 +39,20 @@ async def send_player_panel(message: Message) -> None:
 
     if current:
         card = now_playing_card(
-            current["title"],
-            current.get("artist", ""),
-            current.get("duration"),
-            current.get("requester", ""),
-            video=current.get("is_video", False),
-            is_live=current.get("is_live", False),
-            loop_mode=loop.value,
+            current,
+            elapsed=stream_manager.elapsed(chat_id),
+            queue_len=await queue_manager.size(chat_id),
             volume=vol,
+            loop_mode=loop.value,
         )
     else:
-        from bot.utils.formatters import bq, bold
+        card = error_card(
+            "No track playing.", "Use /play <song> or /song to get started."
+        )
 
-        card = f"🎛 {bold('Control Panel')}\n\n{bq('No track playing. Use /play or /song to start.')}"
-
-    await message.answer(
+    await send_card(
+        message,
         card,
-        parse_mode="HTML",
         reply_markup=player_panel_kb(
             stream_manager.is_playing(chat_id),
             stream_manager.is_paused(chat_id),
@@ -56,16 +64,12 @@ async def send_queue_view(message: Message, page: int = 0) -> None:
     chat_id = message.chat.id
     tracks = await queue_manager.get_queue(chat_id)
     current = await queue_manager.get_current(chat_id)
-    all_tracks = ([current] if current else []) + tracks
-    total_pages = max(1, (len(all_tracks) + PER_PAGE - 1) // PER_PAGE)
+    total_pages = max(1, (len(tracks) + PER_PAGE - 1) // PER_PAGE)
+    page = max(0, min(page, total_pages - 1))
 
-    text = queue_card(all_tracks, page, PER_PAGE)
-    if current:
-        text = f"▶️ <b>Now:</b> {current['title']}\n\n{text}"
-
-    await message.answer(
-        text,
-        parse_mode="HTML",
+    await send_card(
+        message,
+        queue_card(current, tracks, page, PER_PAGE),
         reply_markup=queue_pagination_kb(page, total_pages),
     )
 
@@ -79,18 +83,14 @@ async def cb_panel(query: CallbackQuery) -> None:
 
     if current:
         card = now_playing_card(
-            current["title"],
-            current.get("artist", ""),
-            current.get("duration"),
-            current.get("requester", ""),
-            video=current.get("is_video", False),
-            loop_mode=loop.value,
+            current,
+            elapsed=stream_manager.elapsed(chat_id),
+            queue_len=await queue_manager.size(chat_id),
             volume=vol,
-        )
+            loop_mode=loop.value,
+        ).to_html()
     else:
-        from bot.utils.formatters import bq, bold
-
-        card = f"🎛 {bold('Control Panel')}\n\n{bq('No track playing.')}"
+        card = error_card("No track playing.", "Use /play <song> to start.").to_html()
 
     await query.message.edit_text(
         card,
@@ -187,13 +187,9 @@ async def cb_queue(query: CallbackQuery) -> None:
     chat_id = query.message.chat.id
     tracks = await queue_manager.get_queue(chat_id)
     current = await queue_manager.get_current(chat_id)
-    all_tracks = ([current] if current else []) + tracks
-    text = queue_card(all_tracks)
-    await query.message.edit_text(
-        text,
-        parse_mode="HTML",
-        reply_markup=queue_pagination_kb(0, max(1, len(all_tracks))),
-    )
+    total_pages = max(1, (len(tracks) + PER_PAGE - 1) // PER_PAGE)
+    await _edit_card(query, queue_card(current, tracks, 0, PER_PAGE),
+                     queue_pagination_kb(0, total_pages))
     await query.answer()
 
 
@@ -203,14 +199,10 @@ async def cb_queue_page(query: CallbackQuery) -> None:
     chat_id = query.message.chat.id
     tracks = await queue_manager.get_queue(chat_id)
     current = await queue_manager.get_current(chat_id)
-    all_tracks = ([current] if current else []) + tracks
-    total_pages = max(1, (len(all_tracks) + PER_PAGE - 1) // PER_PAGE)
-    text = queue_card(all_tracks, page, PER_PAGE)
-    await query.message.edit_text(
-        text,
-        parse_mode="HTML",
-        reply_markup=queue_pagination_kb(page, total_pages),
-    )
+    total_pages = max(1, (len(tracks) + PER_PAGE - 1) // PER_PAGE)
+    page = max(0, min(page, total_pages - 1))
+    await _edit_card(query, queue_card(current, tracks, page, PER_PAGE),
+                     queue_pagination_kb(page, total_pages))
     await query.answer()
 
 
@@ -221,7 +213,7 @@ async def cb_lyrics(query: CallbackQuery) -> None:
         await query.answer("Nothing playing", show_alert=True)
         return
     from bot.services.lyrics import get_lyrics
-    from bot.utils.formatters import lyrics_card
+    from bot.utils.cards import lyrics_card
 
     result = await get_lyrics(
         f"{current.get('artist', '')} - {current['title']}",
@@ -230,7 +222,7 @@ async def cb_lyrics(query: CallbackQuery) -> None:
     )
     if result:
         art, tit, lyrics = result
-        await query.message.answer(lyrics_card(tit, art, lyrics), parse_mode="HTML")
+        await send_card(query.message, lyrics_card(tit, art, lyrics))
         await query.answer()
     else:
         await query.answer("Lyrics not found", show_alert=True)
@@ -276,7 +268,7 @@ async def cb_play_track(query: CallbackQuery) -> None:
         track = await get_stream_url(f"https://youtube.com/watch?v={track_id}")
 
     if not track:
-        await query.message.edit_text(error_card("Failed to load track."), parse_mode="HTML")
+        await _edit_card(query, error_card("Failed to load track.", "Try a different result."))
         return
 
     track["requester"] = query.from_user.full_name if query.from_user else "Unknown"
@@ -292,17 +284,16 @@ async def cb_play_track(query: CallbackQuery) -> None:
         await stream_manager.play(chat_id, track)
         loop = await queue_manager.get_loop(chat_id)
         vol = await queue_manager.get_volume(chat_id)
-        await query.message.edit_text(
+        await _edit_card(
+            query,
             now_playing_card(
-                track["title"],
-                track.get("artist", ""),
-                track.get("duration"),
-                track["requester"],
-                loop_mode=loop.value,
+                track,
+                elapsed=0,
+                queue_len=await queue_manager.size(chat_id),
                 volume=vol,
+                loop_mode=loop.value,
             ),
-            parse_mode="HTML",
-            reply_markup=player_panel_kb(True),
+            player_panel_kb(True),
         )
 
 
@@ -386,17 +377,13 @@ async def cb_mood(query: CallbackQuery) -> None:
     await query.answer(f"🎭 Loading {mood}…")
     tracks = await get_mood_tracks(mood, limit=8)
     if not tracks:
-        await query.message.edit_text(error_card("No tracks for this mood."), parse_mode="HTML")
+        await _edit_card(query, error_card("No tracks for this mood.", "Try another vibe."))
         return
     cache_search_results(tracks)
-    from bot.utils.formatters import search_results_card
+    from bot.utils.cards import search_card
     from bot.keyboards.inline import search_results_kb
 
-    await query.message.edit_text(
-        search_results_card(f"{mood} mood", tracks),
-        parse_mode="HTML",
-        reply_markup=search_results_kb(tracks),
-    )
+    await _edit_card(query, search_card(f"{mood} mood", tracks), search_results_kb(tracks))
 
 
 @router.callback_query(F.data.startswith("favplay:"))

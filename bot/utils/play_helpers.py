@@ -1,17 +1,62 @@
-"""Shared playback helper — wires history, stats, autoleave."""
+"""Shared playback helper — wires history, stats, limits, autoleave and cards."""
 
 from __future__ import annotations
 
+import logging
+
 from aiogram.types import Message
 
+from bot.config import config
 from bot.keyboards.inline import player_panel_kb
 from bot.services.autoleave import auto_leave
+from bot.services.database import database
 from bot.services.history import history_tracker
 from bot.services.queue import queue_manager
 from bot.services.stats import bot_stats
 from bot.services.stream import stream_manager
-from bot.utils.formatters import now_playing_card, success_card
-from bot.utils.helpers import ensure_assistant_in_chat, is_group_chat, reply_error
+from bot.utils.cards import error_card, now_playing_card, queued_card
+from bot.utils.guards import is_admin_or_auth
+from bot.utils.helpers import ensure_assistant_in_chat, is_group_chat
+from bot.utils.rich import send_card
+
+logger = logging.getLogger(__name__)
+
+
+async def can_play(message: Message) -> bool:
+    """Honour the per-chat 'only admins may play' setting."""
+    if not is_group_chat(message) or not message.from_user:
+        return True
+    admins_only = bool(
+        await database.get_chat_value(message.chat.id, "play_admins_only", config.admins_only)
+    )
+    if not admins_only:
+        return True
+    if await is_admin_or_auth(message.bot, message.chat.id, message.from_user.id):
+        return True
+    await send_card(
+        message,
+        error_card(
+            "Only admins can start playback in this chat.",
+            "An admin can change this with /settings → Music.",
+        ),
+    )
+    return False
+
+
+def _within_duration_limit(track: dict) -> tuple[bool, str]:
+    """Reject overly long tracks (except live streams)."""
+    if track.get("is_live"):
+        return True, ""
+    duration = track.get("duration")
+    if not duration:
+        return True, ""
+    limit_min = config.video_limit_min if track.get("is_video") else config.duration_limit_min
+    if limit_min <= 0:
+        return True, ""
+    if int(duration) > limit_min * 60:
+        mins = int(duration) // 60
+        return False, f"That track is {mins} minutes long — the limit here is {limit_min} minutes."
+    return True, ""
 
 
 async def play_track(
@@ -26,53 +71,63 @@ async def play_track(
     """Play or queue a track. Returns True on success."""
     chat_id = message.chat.id
     requester = message.from_user.full_name if message.from_user else "Unknown"
+    user_id = message.from_user.id if message.from_user else 0
     track["requester"] = requester
     auto_leave.touch(chat_id)
+
+    ok, reason = _within_duration_limit(track)
+    if not ok:
+        await send_card(message, error_card(reason, "Ask an admin to raise DURATION_LIMIT."), edit=edit_msg)
+        return False
 
     if is_group_chat(message):
         err = await ensure_assistant_in_chat(message.bot, chat_id)
         if err:
-            await reply_error(message, err)
+            await send_card(message, error_card(err), edit=edit_msg)
             return False
 
-    send = edit_msg.edit_text if edit_msg else message.answer
+    should_start = force or (not queue_only and not stream_manager.is_playing(chat_id))
 
-    if force or (not queue_only and not stream_manager.is_playing(chat_id)):
+    if should_start:
         try:
             await stream_manager.play(chat_id, track)
-            await history_tracker.record(chat_id, track)
-            bot_stats.streams_started += 1
-            loop = await queue_manager.get_loop(chat_id)
-            vol = await queue_manager.get_volume(chat_id)
-            card = now_playing_card(
-                track["title"],
-                track.get("artist", ""),
-                track.get("duration"),
-                requester,
-                video=track.get("is_video", False),
-                is_live=track.get("is_live", False),
-                loop_mode=loop.value,
-                volume=vol,
-            )
-            await send(
-                card,
-                parse_mode="HTML",
-                reply_markup=player_panel_kb(True),
-            )
-            return True
         except Exception as exc:
-            await reply_error(message, f"Playback failed: {exc}")
+            logger.error("Playback failed in %s: %s", chat_id, exc)
+            bot_stats.errors_count += 1
+            await send_card(
+                message,
+                error_card(
+                    f"Playback failed: {exc}",
+                    "Make sure a voice chat is running and the assistant is an admin.",
+                ),
+                edit=edit_msg,
+            )
             return False
+
+        await history_tracker.record(chat_id, track)
+        await database.record_play(chat_id, user_id, track)
+        bot_stats.streams_started += 1
+
+        card = now_playing_card(
+            track,
+            elapsed=0,
+            queue_len=await queue_manager.size(chat_id),
+            volume=await queue_manager.get_volume(chat_id),
+            loop_mode=(await queue_manager.get_loop(chat_id)).value,
+        )
+        await send_card(message, card, reply_markup=player_panel_kb(True), edit=edit_msg)
+        return True
 
     try:
         if front:
             await queue_manager.add_front(chat_id, track)
-            text = success_card(f"Added to front of queue: {track['title']}")
+            position = 1
         else:
-            pos = await queue_manager.add(chat_id, track)
-            text = success_card(f"Queued at #{pos}: {track['title']}")
-        await send(text, parse_mode="HTML", reply_markup=player_panel_kb(True))
-        return True
+            position = await queue_manager.add(chat_id, track)
     except ValueError as exc:
-        await reply_error(message, str(exc))
+        await send_card(message, error_card(str(exc), "Use /clear to make room."), edit=edit_msg)
         return False
+
+    card = queued_card(track, position, await queue_manager.size(chat_id))
+    await send_card(message, card, reply_markup=player_panel_kb(True), edit=edit_msg)
+    return True
