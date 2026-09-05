@@ -168,6 +168,21 @@ def _rich_text(value: Inline) -> Any:
     return [sp.to_rich() for sp in spans]
 
 
+def _wrap(value: Inline, tag: str, absorb: tuple[str, ...]) -> str:
+    """Wrap `value` in <tag>, flattening spans whose style the tag already applies.
+
+    Telegram renders one style per span, so <b><b>x</b></b> is invalid nesting.
+    If every span is plain or already carries a style this tag provides, emit
+    the raw text inside a single wrapper instead of nesting.
+    """
+    spans = _norm(value)
+    if all(sp.style in absorb for sp in spans):
+        inner = "".join(esc(sp.text) for sp in spans)
+    else:
+        inner = "".join(sp.to_html() for sp in spans)
+    return f"<{tag}>{inner}</{tag}>"
+
+
 def _html_text(value: Inline) -> str:
     return "".join(sp.to_html() for sp in _norm(value))
 
@@ -355,13 +370,7 @@ class RichCard:
             p = blk.payload
             match blk.kind:
                 case "heading":
-                    # Avoid <b><b>…</b></b> when the caller already bolded the text.
-                    spans = _norm(p["text"])
-                    if all(sp.style in ("bold", "plain") for sp in spans):
-                        inner = "".join(esc(sp.text) for sp in spans)
-                        out.append(f"<b>{inner}</b>")
-                    else:
-                        out.append(f"<b>{_html_text(p['text'])}</b>")
+                    out.append(_wrap(p["text"], "b", ("bold", "plain")))
                 case "para":
                     out.append(_html_text(p["text"]))
                 case "quote":
@@ -378,10 +387,8 @@ class RichCard:
                     out.append(f"<blockquote>{body}</blockquote>")
                 case "details":
                     body = "\n".join(_html_text(ln) for ln in p["lines"])
-                    out.append(
-                        f"<b>{_html_text(p['summary'])}</b>\n"
-                        f"<blockquote expandable>{body}</blockquote>"
-                    )
+                    summary = _wrap(p["summary"], "b", ("bold", "plain"))
+                    out.append(f"{summary}\n<blockquote expandable>{body}</blockquote>")
                 case "list":
                     lines = []
                     for idx, item in enumerate(p["items"], 1):
@@ -408,12 +415,7 @@ class RichCard:
                 case "divider":
                     out.append("━━━━━━━━━━━━━━━")
                 case "footer":
-                    spans = _norm(p["text"])
-                    if all(sp.style in ("italic", "plain") for sp in spans):
-                        inner = "".join(esc(sp.text) for sp in spans)
-                        out.append(f"<i>{inner}</i>")
-                    else:
-                        out.append(f"<i>{_html_text(p['text'])}</i>")
+                    out.append(_wrap(p["text"], "i", ("italic", "plain")))
                 case "blank":
                     out.append("")
         text = "\n".join(out).strip()

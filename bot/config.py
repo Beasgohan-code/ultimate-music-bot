@@ -88,6 +88,9 @@ class Config:
     storage_chat_id: int = field(default_factory=lambda: _env_int("STORAGE_CHAT_ID", 0))
     support_chat: str = field(default_factory=lambda: _clean(os.getenv("SUPPORT_CHAT")))
     support_channel: str = field(default_factory=lambda: _clean(os.getenv("SUPPORT_CHANNEL")))
+    owner_username: str = field(
+        default_factory=lambda: _clean(os.getenv("OWNER_USERNAME")).lstrip("@")
+    )
 
     # ── Assistant userbot ───────────────────────────────────────────────
     assistant_username: str = field(

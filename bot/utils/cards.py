@@ -236,32 +236,165 @@ def success_card(message: str, hint: str = "") -> RichCard:
     return card
 
 
-def welcome_card(bot_name: str, username: str = "") -> RichCard:
-    card = (
+def welcome_card(
+    bot_name: str,
+    username: str = "",
+    first_name: str = "there",
+    user_username: str = "",
+) -> RichCard:
+    """The /start card — greeting, ASCII feature tree, then a collapsed extras list."""
+    handle = f" (@{user_username})" if user_username else ""
+    inline_hint = f"@{username} song name" if username else "inline mode"
+
+    return (
         RichCard()
-        .heading([_icon("🎵"), b(bot_name)], size=1)
-        .para([i("Premium music streaming and full group management in one bot.")])
-        .divider()
-        .para([b("What I can do")])
+        .para([plain("👋 Hey, "), b(f"{first_name}{handle}"), plain(" ~ 🎶")])
+        .blank()
+        .para([plain("ɪ'ᴍ "), b(f"{bot_name}♡"), plain(", your ultimate music companion!")])
+        .para(
+            [
+                plain("Send me "),
+                c("/song [song name]"),
+                plain(" to download tracks instantly. 🎧"),
+            ]
+        )
+        .blank()
+        .pre(
+            "│     ✦ ┊ 🎵 ꜰᴇᴀᴛᴜʀᴇs:\n"
+            "│╭────────────╯\n"
+            "││• 🎶 Instant Song Downloading\n"
+            "││• 🔊 Crystal Clear 320kbps HQ Audio\n"
+            "││• 🎤 Synced Lyrics On Demand\n"
+            "││• 📻 Live Radio & 24/7 Streams\n"
+            "││• 🎬 Video Streaming In Voice Chats\n"
+            "││• 📋 Smart Queue, Loop & Seek\n"
+            "││• 💾 Save & Replay Your Playlists\n"
+            "││• 🛡 Full Group Management Suite\n"
+            "││• 🚫 No Ads, No Interruptions\n"
+            "│╰─────────── · · ✦"
+        )
+        .blank()
+        .details(
+            [plain("✦ ┊ "), b("ᴍᴏʀᴇ ᴛʜɪɴɢs ɪ ᴄᴀɴ ᴅᴏ")],
+            [
+                "🎧  Stream from YouTube, Spotify, SoundCloud & Apple Music",
+                "📢  Channel play — stream into a linked channel's voice chat",
+                f"⚡  Inline mode — type {inline_hint} in any chat",
+                "🎭  Mood playlists, smart suggestions & listening history",
+                "🛡  Warns, mutes, locks, filters, notes & antiflood",
+                "🌐  Multi-language: English, Español, हिन्दी, Русский",
+            ],
+        )
+        .blank()
+        .quote(
+            [
+                "Add me to a group, promote me to admin, start a voice chat,",
+                [plain("then send "), c("/play <song>"), plain(" — that's the whole setup.")],
+            ]
+        )
+        .footer("Tap ✦ Help for every command  •  ✦ Support if you get stuck")
+    )
+
+
+def feature_card(section: str = "overview") -> RichCard:
+    """Feature browser behind the ✨ Features button on /start."""
+    if section == "music":
+        return (
+            RichCard()
+            .heading([_icon("🎵"), b("Music Features")], size=1)
+            .para([i("Everything the player can do.")])
+            .table(
+                ["Command", "What it does"],
+                [
+                    ["/play <song>", "Search & stream into the voice chat"],
+                    ["/song <name>", "Download the track as an MP3"],
+                    ["/vplay <song>", "Stream with video"],
+                    ["/radio <url>", "24/7 live radio or stream"],
+                    ["/seek 1:30", "Jump to a timestamp"],
+                    ["/loop all", "Loop one track, the queue, or 1-10 times"],
+                    ["/lyrics", "Synced lyrics for what's playing"],
+                    ["/saveplaylist", "Save the queue and replay it later"],
+                ],
+            )
+            .bullets(
+                [
+                    "Sources: YouTube, Spotify, SoundCloud, Apple Music, direct files",
+                    "320kbps audio, up to 4K video",
+                    "Queue up to 50 tracks with shuffle, move and skip-to",
+                    "Per-chat volume, speed and quality settings",
+                ]
+            )
+            .footer("Tip: reply to any audio file with /play to stream it.")
+        )
+
+    if section == "group":
+        return (
+            RichCard()
+            .heading([_icon("🛡"), b("Group Management")], size=1)
+            .para([i("A full moderation suite — no second bot needed.")])
+            .table(
+                ["Area", "Commands"],
+                [
+                    ["Warnings", "/warn /warns /warnlimit /warnmode"],
+                    ["Restrict", "/ban /tban 2h /mute /tmute 30m /kick"],
+                    ["Locks", "/lock url /locks /locktypes"],
+                    ["Antiflood", "/setflood 10 /flood"],
+                    ["Notes", "/save /get #note /notes"],
+                    ["Filters", "/filter hello /filters"],
+                    ["Greetings", "/setwelcome /setgoodbye"],
+                    ["Cleanup", "/purge /del /pin"],
+                ],
+            )
+            .bullets(
+                [
+                    "20 lock types including links, forwards, stickers and media",
+                    "Blacklist words with wildcard support",
+                    "Welcome messages with {first} {mention} {chatname} placeholders",
+                    "Disable any command per chat with /disable",
+                ]
+            )
+            .footer("Configure everything visually with /settings.")
+        )
+
+    if section == "power":
+        return (
+            RichCard()
+            .heading([_icon("⚡"), b("Power User Features")], size=1)
+            .bullets(
+                [
+                    "Inline mode — search and share tracks in any chat",
+                    "Channel play — stream into a linked channel's voice chat",
+                    "Saved playlists and favourites that persist across chats",
+                    "Listening history and /top leaderboards per chat or global",
+                    "Mood-based playlists: /mood chill, /mood workout",
+                    "Auth users — let non-admins control the player with /auth",
+                    "Four languages, switchable per chat with /lang",
+                    "Live status page with uptime and health endpoints",
+                ]
+            )
+            .quote(["Sudo tools: /broadcast, /gban, /maintenance, /logs, /sysinfo"])
+            .footer("Owner-only commands are hidden unless you're in SUDO_USERS.")
+        )
+
+    return (
+        RichCard()
+        .heading([_icon("✨"), b("Features")], size=1)
+        .para([i("Pick a category to see the details.")])
         .bullets(
             [
-                "Stream music and video into Telegram voice chats",
-                "Play YouTube, Spotify, SoundCloud, Apple Music and live radio",
-                "Queue, seek, loop, shuffle and control volume",
-                "Fetch lyrics, suggestions and downloadable MP3s",
-                "Moderate your group: warns, mutes, locks, filters and more",
+                [b("🎵 Music"), plain(" — streaming, downloads, queue, lyrics")],
+                [b("🛡 Group"), plain(" — warns, locks, filters, greetings")],
+                [b("⚡ Power user"), plain(" — inline mode, playlists, channel play")],
             ]
         )
         .divider()
-        .para([b("Getting started")])
         .checklist(
             [
-                (False, "Add me to your group"),
-                (False, "Promote me with admin rights"),
-                (False, "Start a voice chat"),
-                (False, [plain("Send "), c("/play your favourite song")]),
+                (True, "Free forever, no ads"),
+                (True, "320kbps high quality audio"),
+                (True, "Works in groups and channels"),
+                (True, "Self-hostable and open source"),
             ]
         )
-        .footer("Tap Help below for every command, or /settings to configure a chat.")
+        .footer("Tap a category below, or ◂ Back to return to the start screen.")
     )
-    return card

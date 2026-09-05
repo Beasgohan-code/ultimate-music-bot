@@ -7,8 +7,8 @@ from aiogram.filters import Command, CommandStart
 from aiogram.types import CallbackQuery, Message
 
 from bot.config import config
-from bot.keyboards.inline import main_menu_kb, settings_kb
-from bot.utils.cards import welcome_card
+from bot.keyboards.inline import features_kb, main_menu_kb, settings_kb, start_kb
+from bot.utils.cards import feature_card, welcome_card
 from bot.utils.formatters import welcome_message
 from bot.utils.rich import send_card
 
@@ -18,12 +18,48 @@ router = Router(name="start")
 @router.message(CommandStart())
 async def cmd_start(message: Message) -> None:
     me = await message.bot.get_me()
-    name = config.bot_name or me.first_name
-    await send_card(
-        message,
-        welcome_card(name, me.username or ""),
-        reply_markup=main_menu_kb(),
+    user = message.from_user
+    card = welcome_card(
+        config.bot_name or me.first_name,
+        me.username or "",
+        first_name=user.first_name if user else "there",
+        user_username=(user.username or "") if user else "",
     )
+    kb = start_kb(me.username or "")
+
+    # A start image makes the card feel like a product, not a log line.
+    if config.start_image_url:
+        try:
+            await message.answer_photo(
+                config.start_image_url, caption=card.to_html(), parse_mode="HTML", reply_markup=kb
+            )
+            return
+        except Exception:
+            pass  # bad/expired URL — fall through to the text card
+    await send_card(message, card, reply_markup=kb)
+
+
+@router.callback_query(F.data == "menu:features")
+async def cb_features(query: CallbackQuery) -> None:
+    try:
+        await query.message.edit_text(
+            feature_card("overview").to_html(), parse_mode="HTML", reply_markup=features_kb()
+        )
+    except Exception:
+        pass
+    await query.answer()
+
+
+@router.callback_query(F.data.startswith("feat:"))
+async def cb_feature_section(query: CallbackQuery) -> None:
+    section = query.data.split(":", 1)[1]
+    try:
+        await query.message.edit_text(
+            feature_card(section).to_html(), parse_mode="HTML", reply_markup=features_kb()
+        )
+    except Exception:
+        pass
+    await query.answer()
 
 
 @router.message(Command("panel"))

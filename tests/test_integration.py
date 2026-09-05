@@ -510,3 +510,100 @@ def test_every_handler_module_exposes_a_router():
     for name in names:
         module = importlib.import_module(f"bot.handlers.{name}")
         assert isinstance(getattr(module, "router", None), Router), f"{name} has no router"
+
+
+def test_details_summary_is_not_double_wrapped():
+    """heading/footer/details all wrap in a style tag; a caller-supplied bold
+    span must not produce invalid <b><b>…</b></b> nesting."""
+    from bot.utils.rich import RichCard, b, plain
+
+    card = (
+        RichCard()
+        .heading([plain("x "), b("bold")])
+        .details([plain("s "), b("summary")], ["line"])
+        .footer([plain("f "), b("end")])
+    )
+    html = card.to_html()
+    for tag in ("b", "i"):
+        assert f"<{tag}><{tag}>" not in html
+        assert f"</{tag}></{tag}>" not in html
+
+
+def test_start_keyboard_uses_new_button_features():
+    from bot.keyboards.inline import start_kb
+
+    kb = start_kb("mybot")
+    flat = [btn for row in kb.inline_keyboard for btn in row]
+
+    add_me = next(b for b in flat if "ᴀᴅᴅ ᴍᴇ" in b.text)
+    assert "startgroup=true" in add_me.url
+    assert "manage_video_chats" in add_me.url, "must request VC rights up front"
+
+    assert any(b.switch_inline_query_chosen_chat for b in flat), "chat-picker button missing"
+    assert any(b.copy_text for b in flat), "copy-to-clipboard share button missing"
+    assert any(b.callback_data == "menu:features" for b in flat)
+
+    # Every button must carry exactly one action, or Telegram rejects the markup.
+    for btn in flat:
+        actions = [
+            btn.url, btn.callback_data, btn.copy_text,
+            btn.switch_inline_query, btn.switch_inline_query_current_chat,
+            btn.switch_inline_query_chosen_chat, btn.web_app, btn.login_url,
+        ]
+        assert sum(a is not None for a in actions) == 1, f"{btn.text} has ambiguous action"
+
+
+def test_start_keyboard_omits_unconfigured_links():
+    """Owner/support/updates buttons must vanish rather than render dead links."""
+    import importlib
+
+    import bot.config
+    import bot.keyboards.inline as kbmod
+
+    original = bot.config.config
+    try:
+        bot.config.config = importlib.import_module("dataclasses").replace(
+            original, owner_username="", support_chat="", support_channel=""
+        )
+        kbmod.config = bot.config.config
+        flat = [b for row in kbmod.start_kb("mybot").inline_keyboard for b in row]
+        assert not any(t in b.text for b in flat for t in ("ᴏᴡɴᴇʀ", "sᴜᴘᴘᴏʀᴛ", "ᴜᴘᴅᴀᴛᴇs"))
+    finally:
+        bot.config.config = original
+        kbmod.config = original
+
+
+def test_feature_cards_all_render():
+    from bot.utils.cards import feature_card
+
+    for section in ("overview", "music", "group", "power", "bogus"):
+        card = feature_card(section)
+        html = card.to_html()
+        assert len(html) <= 4096, f"{section} too long: {len(html)}"
+        assert "<b><b>" not in html
+        card.to_rich_message().model_dump_json(exclude_none=True)
+
+
+def test_every_keyboard_callback_has_a_handler():
+    """A button whose callback_data nobody handles just spins forever."""
+    import importlib
+    import inspect
+    import re
+
+    import bot.keyboards.inline as kbmod
+
+    # Collect literal callback_data values produced by the keyboard factories.
+    emitted = set(re.findall(r'callback_data="([a-z_]+:[a-z_]+)"', inspect.getsource(kbmod)))
+
+    handled: set[str] = set()
+    prefixes: list[str] = []
+    for name in ("start", "callbacks", "settings", "dashboard", "advanced", "extras"):
+        src = inspect.getsource(importlib.import_module(f"bot.handlers.{name}"))
+        handled |= set(re.findall(r'F\.data == "([^"]+)"', src))
+        prefixes += re.findall(r'F\.data\.startswith\("([^"]+)"\)', src)
+
+    orphans = {
+        cb for cb in emitted
+        if cb not in handled and not any(cb.startswith(p) for p in prefixes)
+    }
+    assert not orphans, f"Buttons with no handler: {sorted(orphans)}"

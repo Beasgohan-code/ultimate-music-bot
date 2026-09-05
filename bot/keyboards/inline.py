@@ -3,9 +3,128 @@
 from __future__ import annotations
 
 from aiogram.enums import ButtonStyle
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import (
+    CopyTextButton,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    SwitchInlineQueryChosenChat,
+)
 
+from bot.config import config
 from bot.utils.formatters import format_duration
+
+
+
+def start_kb(bot_username: str = "") -> InlineKeyboardMarkup:
+    """The /start keyboard.
+
+    Uses the newer Bot API button features: coloured styles, a chat-picker
+    "add me" button, an inline-query launcher, and a copy-to-clipboard button.
+    Rows adapt to whichever support links are actually configured.
+    """
+    uname = bot_username or config.bot_username
+    rows: list[list[InlineKeyboardButton]] = []
+
+    # ── Primary call to action: let the user pick a group to add me to.
+    if uname:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="➕ ᴀᴅᴅ ᴍᴇ ᴛᴏ ʏᴏᴜʀ ɢʀᴏᴜᴘ",
+                    url=f"https://t.me/{uname}?startgroup=true&admin="
+                    "delete_messages+restrict_members+pin_messages+invite_users+manage_video_chats",
+                    style=ButtonStyle.PRIMARY,
+                )
+            ]
+        )
+
+    # ── Try it right now, without leaving the chat.
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="🔎 sᴇᴀʀᴄʜ ɪɴʟɪɴᴇ",
+                switch_inline_query_chosen_chat=SwitchInlineQueryChosenChat(
+                    query="",
+                    allow_user_chats=True,
+                    allow_group_chats=True,
+                    allow_channel_chats=True,
+                ),
+            ),
+            InlineKeyboardButton(
+                text="🎧 ᴛʀʏ ᴀ sᴏɴɢ",
+                switch_inline_query_current_chat="",
+                style=ButtonStyle.SUCCESS,
+            ),
+        ]
+    )
+
+    rows.append(
+        [
+            InlineKeyboardButton(text="📖 ʜᴇʟᴘ", callback_data="menu:help"),
+            InlineKeyboardButton(text="✨ ꜰᴇᴀᴛᴜʀᴇs", callback_data="menu:features"),
+            InlineKeyboardButton(text="⚙️ sᴇᴛᴛɪɴɢs", callback_data="menu:settings"),
+        ]
+    )
+
+    # ── Owner / support / updates, only when configured.
+    third: list[InlineKeyboardButton] = []
+    if config.owner_username:
+        third.append(
+            InlineKeyboardButton(text="👑 ᴏᴡɴᴇʀ", url=f"https://t.me/{config.owner_username}")
+        )
+    if config.support_chat:
+        third.append(
+            InlineKeyboardButton(
+                text="💬 sᴜᴘᴘᴏʀᴛ", url=_tg_link(config.support_chat), style=ButtonStyle.LINK
+            )
+        )
+    if config.support_channel:
+        third.append(
+            InlineKeyboardButton(
+                text="📢 ᴜᴘᴅᴀᴛᴇs", url=_tg_link(config.support_channel), style=ButtonStyle.LINK
+            )
+        )
+    if third:
+        rows.append(third)
+
+    # ── Share link: copy_text puts it on the clipboard with no extra screen.
+    if uname:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="🔗 sʜᴀʀᴇ ᴍᴇ",
+                    copy_text=CopyTextButton(text=f"https://t.me/{uname}"),
+                ),
+                InlineKeyboardButton(text="📊 sᴛᴀᴛs", callback_data="menu:stats"),
+            ]
+        )
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def features_kb() -> InlineKeyboardMarkup:
+    """Sub-menu shown behind the ✨ Features button."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🎵 ᴍᴜsɪᴄ", callback_data="feat:music"),
+                InlineKeyboardButton(text="🛡 ɢʀᴏᴜᴘ", callback_data="feat:group"),
+            ],
+            [
+                InlineKeyboardButton(text="⚡ ᴘᴏᴡᴇʀ ᴜsᴇʀ", callback_data="feat:power"),
+                InlineKeyboardButton(text="📖 ᴀʟʟ ᴄᴏᴍᴍᴀɴᴅs", callback_data="menu:help"),
+            ],
+            [InlineKeyboardButton(text="◂ ʙᴀᴄᴋ", callback_data="menu:back")],
+        ]
+    )
+
+
+def _tg_link(handle: str) -> str:
+    """Accept @name, name, or a full URL and always return a valid https link."""
+    handle = handle.strip()
+    if handle.startswith("http://") or handle.startswith("https://"):
+        return handle
+    return f"https://t.me/{handle.lstrip('@')}"
 
 
 def main_menu_kb() -> InlineKeyboardMarkup:
