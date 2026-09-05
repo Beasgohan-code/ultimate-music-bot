@@ -1876,3 +1876,194 @@ def test_empty_playlist_is_reported_not_crashed():
 
     source = inspect.getsource(play._import_platform_link)
     assert "if not queries:" in source, "empty track list must be handled"
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Clean mode
+#
+# /settings has exposed "clean mode" and "clean commands" toggles for a
+# while, but nothing read them — flipping them did nothing at all.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+class _FakeChat:
+    def __init__(self, chat_type="supergroup"):
+        self.id = -1001234
+        self.type = chat_type
+
+
+class _FakeMessage:
+    def __init__(self, chat_type="supergroup"):
+        self.deleted = False
+        self.chat = _FakeChat(chat_type)
+
+    async def delete(self):
+        self.deleted = True
+
+
+class _FakeDB:
+    def __init__(self, doc):
+        self.doc = doc
+
+    async def get_chat(self, chat_id):
+        return self.doc
+
+
+def _with_settings(monkeypatch, doc):
+    from bot.services import cleanup
+
+    monkeypatch.setattr(cleanup, "database", _FakeDB(doc))
+    return cleanup
+
+
+def test_clean_commands_respects_the_toggle(monkeypatch):
+    import asyncio
+
+    cleanup = _with_settings(monkeypatch, {})
+    off = _FakeMessage()
+    asyncio.run(cleanup.clean_command(off))
+    assert not off.deleted, "deleted a command without being asked to"
+
+    cleanup = _with_settings(monkeypatch, {"clean_commands": True})
+    on = _FakeMessage()
+    asyncio.run(cleanup.clean_command(on))
+    assert on.deleted
+
+
+def test_private_chats_keep_their_commands(monkeypatch):
+    """There is no clutter problem in a DM, and deleting there is confusing."""
+    import asyncio
+
+    cleanup = _with_settings(monkeypatch, {"clean_commands": True})
+    dm = _FakeMessage("private")
+    asyncio.run(cleanup.clean_command(dm))
+    assert not dm.deleted
+
+
+def test_clean_mode_deletes_transient_replies(monkeypatch):
+    import asyncio
+
+    cleanup = _with_settings(monkeypatch, {"clean_mode": True})
+
+    async def run():
+        msg = _FakeMessage()
+        cleanup.schedule_cleanup(msg, delay=0)
+        await asyncio.sleep(0.1)
+        return msg
+
+    assert asyncio.run(run()).deleted
+
+
+def test_clean_mode_off_keeps_everything(monkeypatch):
+    import asyncio
+
+    cleanup = _with_settings(monkeypatch, {})
+
+    async def run():
+        msg = _FakeMessage()
+        cleanup.schedule_cleanup(msg, delay=0)
+        await asyncio.sleep(0.1)
+        return msg
+
+    assert not asyncio.run(run()).deleted
+
+
+def test_zero_delay_is_not_mistaken_for_unset(monkeypatch):
+    """`delay or default` would swallow a deliberate 0, since 0 is falsy."""
+    import asyncio
+    import inspect
+
+    from bot.services import cleanup
+
+    source = inspect.getsource(cleanup.schedule_cleanup)
+    assert "delay is None" in source, "0 would fall through to the default delay"
+
+    cleanup_mod = _with_settings(monkeypatch, {"clean_mode": True})
+
+    async def run():
+        msg = _FakeMessage()
+        cleanup_mod.schedule_cleanup(msg, delay=0)
+        await asyncio.sleep(0.1)
+        return msg
+
+    assert asyncio.run(run()).deleted
+
+
+def test_settings_lookup_failure_never_breaks_playback(monkeypatch):
+    import asyncio
+
+    from bot.services import cleanup
+
+    class Boom:
+        async def get_chat(self, chat_id):
+            raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(cleanup, "database", Boom())
+    msg = _FakeMessage()
+    asyncio.run(cleanup.clean_command(msg))  # must not raise
+    assert not msg.deleted
+
+
+def test_shutdown_cancels_pending_deletions(monkeypatch):
+    import asyncio
+
+    cleanup = _with_settings(monkeypatch, {"clean_mode": True})
+
+    async def run():
+        msg = _FakeMessage()
+        cleanup.schedule_cleanup(msg, delay=99)
+        await asyncio.sleep(0)
+        await cleanup.stop()
+        return msg
+
+    msg = asyncio.run(run())
+    assert cleanup.pending() == 0
+    assert not msg.deleted
+
+
+def test_play_deletes_the_command_when_asked():
+    import inspect
+
+    from bot.handlers import play
+
+    source = inspect.getsource(play._resolve_and_play)
+    assert "clean_command" in source
+    # A failed play leaves a status message behind; it should not linger.
+    assert "schedule_cleanup" in source
+
+
+def test_platform_import_passes_queue_only_through():
+    """A Spotify link via /cplay hit an undefined name before this."""
+    import inspect
+
+    from bot.handlers import play
+
+    sig = inspect.signature(play._import_platform_link)
+    assert "queue_only" in sig.parameters
+
+    caller = inspect.getsource(play._resolve_and_play)
+    assert "queue_only=queue_only" in caller
+
+
+def test_ending_the_voice_chat_tears_down_state():
+    """Otherwise the bot holds a queue for a call that no longer exists."""
+    import inspect
+
+    from bot.handlers import play
+
+    source = inspect.getsource(play.on_video_chat_ended)
+    assert "queue_manager.clear" in source
+    assert "stream_manager.stop" in source
+    # Both wrapped: a teardown that raises would strand the other half.
+    assert source.count("except Exception") >= 2
+
+
+def test_teardown_is_silent():
+    """Ending a call is already visible; an extra card is the noise we removed."""
+    import inspect
+
+    from bot.handlers import play
+
+    source = inspect.getsource(play.on_video_chat_ended)
+    for noisy in ("message.answer", "send_card", "message.reply"):
+        assert noisy not in source, f"teardown should not post: {noisy}"

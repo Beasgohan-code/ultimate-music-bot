@@ -54,6 +54,7 @@ from bot.handlers import (  # noqa: E402
 from bot.middlewares.enforcement import EnforcementMiddleware  # noqa: E402
 from bot.middlewares.gatekeeper import GatekeeperMiddleware  # noqa: E402
 from bot.services.autoleave import auto_leave
+from bot.services import cleanup
 from bot.services.scheduler import scheduler  # noqa: E402
 from bot.services.database import database  # noqa: E402
 from bot.services.i18n import translator  # noqa: E402
@@ -524,6 +525,7 @@ async def main() -> None:
         logger.info("Shutting down…")
         await scheduler.stop()
         await auto_leave.stop()
+        await cleanup.stop()
         for chat_id in list(stream_manager.active_chats):
             try:
                 await stream_manager.stop(chat_id)

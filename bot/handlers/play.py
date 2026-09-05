@@ -36,6 +36,7 @@ from bot.utils.cards import (
     success_card,
     voteskip_card,
 )
+from bot.services.cleanup import clean_command, schedule_cleanup
 from bot.utils.play_helpers import can_play, play_track
 from bot.utils.rich import send_card, send_html
 
@@ -65,7 +66,9 @@ def _brand(track: dict, resolved, index: int) -> None:
     track["origin_url"] = getattr(resolved, "url", "") or ""
 
 
-async def _import_platform_link(message: Message, query: str, *, video: bool, status) -> bool:
+async def _import_platform_link(
+    message: Message, query: str, *, video: bool, status, queue_only: bool = False
+) -> bool:
     """Handle a Spotify / Apple Music / Deezer link. True when handled.
 
     A single track just becomes a normal search. An album or playlist is worth
@@ -191,9 +194,12 @@ async def _resolve_and_play(
 ) -> None:
     if not await can_play(message):
         return
+    await clean_command(message)
     status = await message.answer("⏳ <b>Loading media…</b>", parse_mode="HTML")
 
-    if not live and await _import_platform_link(message, query, video=video, status=status):
+    if not live and await _import_platform_link(
+        message, query, video=video, status=status, queue_only=queue_only
+    ):
         return
 
     track = await get_stream_url(query, video=video, live=live)
@@ -226,6 +232,8 @@ async def _resolve_and_play(
                 ),
                 edit=status,
             )
+        # Nothing played, so this status message is now pure clutter.
+        schedule_cleanup(status)
         return
     await play_track(
         message, track,
@@ -555,3 +563,23 @@ async def handle_media_file(message: Message, bot: Bot) -> None:
         await status.edit_text(f"✅ File queued at <b>#{pos}</b>", parse_mode="HTML")
     else:
         await play_track(message, track, force=True, edit_msg=status)
+
+
+@router.message(F.video_chat_ended)
+async def on_video_chat_ended(message: Message) -> None:
+    """Tear down when the voice chat is closed from Telegram's own UI.
+
+    Without this the bot keeps a queue and a stream for a call that no longer
+    exists, so the next /play or /skip fails in a confusing way. Silent by
+    design — ending the call is already visible in the chat, and an extra
+    "stopped" card is exactly the noise clean mode exists to prevent.
+    """
+    chat_id = message.chat.id
+    try:
+        await queue_manager.clear(chat_id)
+    except Exception as exc:
+        logger.debug("Queue clear after video chat ended failed: %s", exc)
+    try:
+        await stream_manager.stop(chat_id)
+    except Exception as exc:
+        logger.debug("Stream stop after video chat ended failed: %s", exc)

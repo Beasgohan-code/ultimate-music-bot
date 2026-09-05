@@ -176,6 +176,23 @@ the symbols py-tgcalls needs, and locates or installs FFmpeg. A misconfigured
 dependency produces an explicit message with the fix, rather than a traceback
 from deep inside a library.
 
+## Keeping chats quiet
+
+A music bot is chatty: every `/play` leaves a command, a status message and a
+Now Playing card. Two per-chat toggles under `/settings` -> Clean Mode fix that,
+and both are off by default:
+
+| Toggle | Effect |
+| --- | --- |
+| Clean command messages | Deletes the `/play ...` message the moment it runs |
+| Clean player messages | Deletes status and error replies after `CLEAN_MODE_SECONDS` (default 5 min) |
+
+Now Playing cards are never auto-deleted — the player buttons live on them.
+Commands in private chats are never deleted either.
+
+Ending the voice chat from Telegram's own menu now clears the queue and stops
+the stream, instead of leaving the bot holding state for a call that is gone.
+
 ## Music sources
 
 Paste a link from any of these and the bot works out what to do:

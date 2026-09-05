@@ -465,11 +465,11 @@ async def cb_settings_clean(query: CallbackQuery, bot: Bot) -> None:
         .para([plain("Keeps the chat tidy by removing the bot's own clutter.")])
         .checklist(
             [
-                (clean, "Delete old 'now playing' cards"),
-                (cmd_clean, "Delete command messages after running"),
+                (clean, f"Delete status and error replies after {config.clean_mode_seconds // 60} min"),
+                (cmd_clean, "Delete /play commands as soon as they run"),
             ]
         )
-        .footer("Player cards are removed when the next track starts.")
+        .footer("Now Playing cards are always kept — the player buttons live on them.")
     )
     await _edit(
         query,

@@ -450,11 +450,15 @@ async def send_card(
     edit: Message | None = None,
     reply: bool = False,
     disable_preview: bool = True,
+    transient: bool = False,
 ) -> Message | None:
     """Send (or edit) ``card`` using rich blocks, degrading to HTML.
 
     ``edit`` — when given, that message is edited instead of sending a new one.
     Rich messages cannot be edited, so editing always uses the HTML twin.
+
+    ``transient`` — mark throwaway output (errors, acknowledgements) so clean
+    mode can remove it later. Ignored unless the chat enabled clean mode.
     """
     if edit is not None:
         try:
@@ -470,10 +474,11 @@ async def send_card(
             logger.debug("Card edit failed: %s", exc)
             return edit
 
+    sent: Message | None = None
     if _RICH_SUPPORTED:
         try:
             sender = message.reply_rich if reply else message.answer_rich
-            return await sender(
+            sent = await sender(
                 rich_message=card.to_rich_message(),
                 reply_markup=reply_markup,
             )
@@ -485,13 +490,22 @@ async def send_card(
         except Exception as exc:  # network/serialisation issues shouldn't lose the message
             logger.debug("Rich send error (%s) — using HTML", exc)
 
-    sender = message.reply if reply else message.answer
-    return await sender(
-        card.to_html(),
-        parse_mode="HTML",
-        reply_markup=reply_markup,
-        link_preview_options=_no_preview() if disable_preview else None,
-    )
+    if sent is None:
+        sender = message.reply if reply else message.answer
+        sent = await sender(
+            card.to_html(),
+            parse_mode="HTML",
+            reply_markup=reply_markup,
+            link_preview_options=_no_preview() if disable_preview else None,
+        )
+
+    if transient:
+        # Imported lazily: cleanup imports config/database, and rich.py is
+        # pulled in by almost everything.
+        from bot.services.cleanup import schedule_cleanup
+
+        schedule_cleanup(sent)
+    return sent
 
 
 def _no_preview():
