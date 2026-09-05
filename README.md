@@ -82,14 +82,25 @@ keep those ids valid across restarts.
 
 ### 1. Requirements
 
-- Python **3.10+**
-- **FFmpeg** on `PATH` (required — this is what actually encodes the stream)
+- Python **3.11–3.13** (3.12 recommended; pinned in `.python-version`)
+- **FFmpeg** (required — it encodes the stream and transcodes `/song` downloads)
 - A Telegram **bot token** and a **user account** to act as the streaming assistant
 
 ```bash
 # Debian/Ubuntu
 sudo apt install ffmpeg python3-pip
 ```
+
+If your host has no apt (Render's native Python runtime, for example), the
+bundled `imageio-ffmpeg` wheel supplies a static binary and the bot puts it on
+`PATH` automatically at startup.
+
+> **MTProto client:** this project needs **kurigram**, not official `pyrogram`.
+> Official pyrogram hasn't shipped since 2023 and lacks `GroupcallForbidden`,
+> which py-tgcalls imports at load time — installing it makes the bot crash on
+> boot. Kurigram is API-compatible and uses the identical session-string format,
+> so an existing `SESSION_STRING` keeps working. Never install
+> `py-tgcalls[pyrogram]`: that extra reinstalls official pyrogram over the fork.
 
 ### 2. Install
 
@@ -141,6 +152,22 @@ python main.py
 Works with **zero database setup** — state lives in `data/*.json`. Set `MONGO_URI`
 and the same code paths switch to MongoDB automatically, which is what you want for
 multi-instance or ephemeral-filesystem hosts. `/sysinfo` reports the active backend.
+
+## Deploying
+
+| Host | Notes |
+|---|---|
+| **Docker** | `docker compose up -d` — the image installs FFmpeg and pins Python 3.12 |
+| **Render** | `render.yaml` is committed. Set `PYTHON_VERSION=3.12.7`; Render's current default is 3.14, which is newer than `ntgcalls` and `TgCrypto` target |
+| **Anything else** | `pip install -r requirements.txt && python main.py` |
+
+Render reads `.python-version`, **not** `runtime.txt` (that file is ignored and
+has been removed). `PYTHON_VERSION` as an env var overrides both.
+
+On boot the bot runs a preflight check: it verifies the MTProto client provides
+the symbols py-tgcalls needs, and locates or installs FFmpeg. A misconfigured
+dependency produces an explicit message with the fix, rather than a traceback
+from deep inside a library.
 
 ## Health checks
 

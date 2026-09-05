@@ -1005,3 +1005,133 @@ async def test_missing_ffmpeg_gives_a_clear_error(monkeypatch):
     with pytest.raises(downloads.DownloadError) as excinfo:
         await downloads.download_track({"id": "x", "title": "X", "url": "http://example.com/a.mp3"})
     assert "ffmpeg" in str(excinfo.value).lower()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Deployment / dependency guards
+#
+# These reproduce the Render startup crash:
+#   ImportError: cannot import name 'GroupcallForbidden' from 'pyrogram.errors'
+# caused by installing official pyrogram (unreleased since 2023) instead of a
+# maintained fork. py-tgcalls imports that symbol at module load.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_pyrogram_fork_provides_the_symbols_pytgcalls_needs():
+    from pyrogram.errors import GroupcallForbidden, GroupcallInvalid  # noqa: F401
+
+    import pyrogram
+
+    assert pyrogram.__version__ >= "2.1", (
+        f"pyrogram {pyrogram.__version__} looks like official pyrogram, which "
+        "cannot drive voice calls. Install kurigram."
+    )
+
+
+def test_pytgcalls_client_module_imports():
+    """The exact import chain that crashed the deploy."""
+    from pytgcalls.mtproto.pyrogram_client import PyrogramClient  # noqa: F401
+
+
+def test_pytgcalls_constructs_against_the_installed_client():
+    """Reproduces main.py's stream_manager.setup() crash site."""
+    import pyrogram
+    from pytgcalls import PyTgCalls
+
+    client = pyrogram.Client("regression", api_id=1, api_hash="x", in_memory=True)
+    assert PyTgCalls(client) is not None
+
+
+def test_requirements_do_not_pull_in_official_pyrogram():
+    """`py-tgcalls[pyrogram]` would reinstall official pyrogram over the fork —
+    both occupy the same `pyrogram` package name, so the extra silently wins."""
+    import pathlib
+
+    text = pathlib.Path("requirements.txt").read_text()
+    lines = [
+        ln.strip() for ln in text.splitlines()
+        if ln.strip() and not ln.strip().startswith("#")
+    ]
+
+    assert any(ln.lower().startswith("kurigram") for ln in lines), "kurigram must be pinned"
+    for line in lines:
+        assert not line.lower().startswith("pyrogram"), f"official pyrogram pinned: {line}"
+        assert "[pyrogram]" not in line.lower(), (
+            f"the [pyrogram] extra reinstalls official pyrogram: {line}"
+        )
+
+
+def test_session_string_format_matches_official_pyrogram():
+    """Swapping to the fork must not invalidate existing SESSION_STRINGs."""
+    from pyrogram.storage.storage import Storage
+
+    # These struct formats are what encode/decode a session string. If they
+    # ever diverge from official pyrogram's, every user must log in again.
+    assert Storage.SESSION_STRING_FORMAT == ">BI?256sQ?"
+    assert Storage.OLD_SESSION_STRING_FORMAT == ">B?256sI?"
+    assert Storage.OLD_SESSION_STRING_FORMAT_64 == ">B?256sQ?"
+
+
+def test_assistant_client_accepts_our_constructor_arguments():
+    import inspect
+
+    from pyrogram import Client
+
+    params = inspect.signature(Client.__init__).parameters
+    for name in ("api_id", "api_hash", "session_string", "in_memory"):
+        assert name in params, f"Client() lost the {name} parameter"
+
+
+def test_python_version_pin_is_present_and_sane():
+    """Render ignores runtime.txt now; it reads .python-version."""
+    import pathlib
+
+    pin = pathlib.Path(".python-version")
+    assert pin.exists(), ".python-version is required — Render ignores runtime.txt"
+    version = pin.read_text().strip()
+    major, minor = (int(x) for x in version.split(".")[:2])
+    assert major == 3 and 10 <= minor <= 13, (
+        f"{version}: native deps (ntgcalls, TgCrypto) need a version with wheels"
+    )
+    assert not pathlib.Path("runtime.txt").exists(), (
+        "runtime.txt is ignored by Render and contradicts .python-version"
+    )
+
+
+def test_preflight_rejects_a_pyrogram_without_groupcall_errors(monkeypatch):
+    """The guard must exit with guidance, not a bare ImportError."""
+    import builtins
+    import importlib
+
+    main = importlib.import_module("main")
+    real_import = builtins.__import__
+
+    def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "pyrogram.errors" and "GroupcallForbidden" in (fromlist or ()):
+            raise ImportError("cannot import name 'GroupcallForbidden'")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    with pytest.raises(SystemExit) as excinfo:
+        main._preflight()
+    assert excinfo.value.code == 1
+
+
+def test_ensure_ffmpeg_falls_back_to_the_bundled_binary(monkeypatch):
+    """Hosts without apt still need a working ffmpeg on PATH."""
+    import importlib
+    import shutil as shutil_mod
+    import subprocess
+
+    main = importlib.import_module("main")
+
+    # Pretend no system ffmpeg exists, but only for the lookup inside
+    # _ensure_ffmpeg — the assertion below needs the real shutil.which.
+    real_which = shutil_mod.which
+    monkeypatch.setattr(main.shutil, "which", lambda name: None)
+
+    assert main._ensure_ffmpeg() is True
+    monkeypatch.undo()
+    resolved = real_which("ffmpeg", path=os.environ["PATH"])
+    assert resolved, "ffmpeg was not placed on PATH"
+    out = subprocess.run([resolved, "-version"], capture_output=True, text=True)
+    assert out.returncode == 0 and "ffmpeg version" in out.stdout

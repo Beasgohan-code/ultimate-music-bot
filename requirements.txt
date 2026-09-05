@@ -1,10 +1,26 @@
 # Telegram Bot
 aiogram>=3.31.0,<4.0.0  # 3.31 adds sendRichMessage / InputRichMessage
-pyrogram>=2.0.106
+
+# MTProto client for the streaming assistant.
+#
+# Kurigram, NOT official pyrogram. Official pyrogram has not shipped since
+# 2023 (2.0.106) and lacks `GroupcallForbidden`, which py-tgcalls 2.3+ imports
+# at module load — installing official pyrogram makes the bot crash on start
+# with `ImportError: cannot import name 'GroupcallForbidden'`.
+# Kurigram is API-compatible and uses the identical session-string format, so
+# existing SESSION_STRING values keep working.
+kurigram>=2.2.25
 TgCrypto>=1.2.5
 
-# Voice Chat
-py-tgcalls[pyrogram]>=2.1.0
+# Voice Chat — no [pyrogram] extra: it would drag official pyrogram back in
+# and shadow kurigram (both install into the same `pyrogram` package).
+py-tgcalls>=2.3.3
+
+# FFmpeg fallback. FFmpeg is REQUIRED — it encodes the voice-chat stream and
+# performs the /song MP3 transcode. Prefer a system package (`apt install
+# ffmpeg`, as the Dockerfile does). On PaaS hosts with no apt (Render's native
+# Python runtime), this wheel ships a static binary that main.py puts on PATH.
+imageio-ffmpeg>=0.5.1
 
 # HTTP
 aiohttp>=3.12.0

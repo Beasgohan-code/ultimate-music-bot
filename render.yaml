@@ -9,9 +9,14 @@ projects:
       name: ultimate-music-bot
       runtime: python
       repo: https://github.com/Beasgohan-code/ultimate-music-bot
-      branch: cursor/ultimate-music-bot-0795
+      branch: main
       plan: free
       envVars:
+      # Render's default is now Python 3.14, which is newer than ntgcalls and
+      # TgCrypto target. .python-version pins 3.12; this is a belt-and-braces
+      # duplicate because PYTHON_VERSION takes precedence over that file.
+      - key: PYTHON_VERSION
+        value: 3.12.7
       - key: SUDO_USERS
         sync: false
       - key: API_HASH
@@ -20,7 +25,14 @@ projects:
         sync: false
       - key: BOT_TOKEN
         sync: false
+      - key: SESSION_STRING
+        sync: false
+      - key: OWNER_ID
+        sync: false
       region: frankfurt
+      # FFmpeg is required for streaming and for the /song MP3 transcode.
+      # Render's native Python runtime has no apt, so it is installed as a
+      # pip-provided static binary and exposed on PATH by main.py.
       buildCommand: pip install -r requirements.txt
       startCommand: python main.py
       autoDeployTrigger: commit

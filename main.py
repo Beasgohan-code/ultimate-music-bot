@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import shutil
 import sys
 from logging.handlers import RotatingFileHandler
+from pathlib import Path
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -189,6 +192,110 @@ def _make_schedule_runner(bot):
     return run
 
 
+
+
+def _ensure_ffmpeg() -> bool:
+    """Make sure an `ffmpeg` binary is reachable on PATH.
+
+    FFmpeg is required for both streaming and the /song transcode. Managed
+    Python hosts (Render, Railway on the native runtime) give you no apt, so
+    fall back to the static binary shipped by the imageio-ffmpeg wheel and
+    expose it under a stable name that subprocesses can find.
+    """
+    if shutil.which("ffmpeg"):
+        return True
+
+    try:
+        import imageio_ffmpeg
+    except ImportError:
+        logger.error(
+            "FFmpeg is not installed and imageio-ffmpeg is unavailable. "
+            "Streaming and /song will fail. Install FFmpeg (apt install ffmpeg) "
+            "or add imageio-ffmpeg to requirements.txt."
+        )
+        return False
+
+    try:
+        binary = Path(imageio_ffmpeg.get_ffmpeg_exe())
+        if not binary.is_file():
+            raise FileNotFoundError(binary)
+    except Exception as exc:
+        logger.error("Could not locate a bundled FFmpeg: %s", exc)
+        return False
+
+    bin_dir = DATA_DIR / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    link = bin_dir / "ffmpeg"
+    try:
+        if link.is_symlink() or link.exists():
+            link.unlink()
+        link.symlink_to(binary)
+    except OSError:
+        # Some filesystems disallow symlinks; copying is a fine fallback.
+        try:
+            shutil.copy2(binary, link)
+            link.chmod(0o755)
+        except OSError as exc:
+            logger.error("Could not install a bundled FFmpeg: %s", exc)
+            return False
+
+    os.environ["PATH"] = f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"
+    logger.info("Using bundled FFmpeg from imageio-ffmpeg (%s)", binary.name)
+    return True
+
+
+def _preflight() -> None:
+    """Fail loudly and legibly on known-bad dependency combinations.
+
+    The most common deploy failure is installing official `pyrogram` instead of
+    a maintained fork: py-tgcalls imports `GroupcallForbidden` at module load,
+    official pyrogram has not shipped since 2023 and does not define it, and the
+    result is a bare ImportError deep inside pytgcalls that tells the operator
+    nothing about how to fix it.
+    """
+    try:
+        import pyrogram
+    except ImportError:
+        logger.error(
+            "No MTProto client installed. Run: pip install -r requirements.txt"
+        )
+        sys.exit(1)
+
+    try:
+        from pyrogram.errors import GroupcallForbidden  # noqa: F401  (probe)
+    except ImportError:
+        version = getattr(pyrogram, "__version__", "unknown")
+        logger.error(
+            "=" * 62
+            + "\n  INCOMPATIBLE PYROGRAM INSTALL"
+            + "\n" + "=" * 62
+            + f"\n  Installed pyrogram {version} does not provide GroupcallForbidden,"
+            + "\n  which py-tgcalls needs. This is official pyrogram, which has not"
+            + "\n  been released since 2023 and cannot drive voice calls."
+            + "\n"
+            + "\n  Fix:"
+            + "\n    pip uninstall -y pyrogram pyrofork"
+            + "\n    pip install -U kurigram"
+            + "\n"
+            + "\n  Your existing SESSION_STRING keeps working — the session format"
+            + "\n  is identical, so there is no need to log in again."
+            + "\n" + "=" * 62
+        )
+        sys.exit(1)
+
+    if not _ensure_ffmpeg():
+        logger.warning(
+            "Continuing without FFmpeg — playback and downloads will not work."
+        )
+
+    if sys.version_info >= (3, 14):
+        logger.warning(
+            "Running on Python %d.%d. Some native deps (ntgcalls, TgCrypto) may "
+            "lack wheels here; 3.11-3.12 is the tested range.",
+            *sys.version_info[:2],
+        )
+
+
 async def _janitor() -> None:
     """Periodically clear out stale downloads and rendered thumbnails."""
     from bot.services.downloads import prune_downloads
@@ -218,6 +325,8 @@ async def main() -> None:
         sys.exit(1)
     for warn in config.warnings():
         logger.warning("%s", warn)
+
+    _preflight()
 
     backend = await database.connect()
     logger.info("Languages loaded: %s", ", ".join(translator.languages))
