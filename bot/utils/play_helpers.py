@@ -16,6 +16,7 @@ from bot.services.stats import bot_stats
 from bot.services.stream import stream_manager
 from bot.utils.cards import error_card, now_playing_card, queued_card
 from bot.utils.guards import is_admin_or_auth
+from bot.services.callerrors import diagnose
 from bot.utils.helpers import ensure_assistant_in_chat, is_group_chat
 from bot.utils.rich import send_card
 
@@ -92,14 +93,14 @@ async def play_track(
         try:
             await stream_manager.play(chat_id, track)
         except Exception as exc:
-            logger.error("Playback failed in %s: %s", chat_id, exc)
+            logger.error("Playback failed in %s: %s", chat_id, exc, exc_info=True)
             bot_stats.errors_count += 1
+            # "NoActiveGroupCall()" means nothing to a user, and each cause
+            # has a completely different fix.
+            found = diagnose(exc, config.assistant_username)
             await send_card(
                 message,
-                error_card(
-                    f"Playback failed: {exc}",
-                    "Make sure a voice chat is running and the assistant is an admin.",
-                ),
+                error_card(found.title, found.hint),
                 edit=edit_msg,
             )
             return False

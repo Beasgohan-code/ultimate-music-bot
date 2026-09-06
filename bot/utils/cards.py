@@ -364,16 +364,23 @@ def stats_card(
 
 
 def error_card(message: str, hint: str = "") -> RichCard:
-    card = RichCard().heading([_icon("❌"), b("Something went wrong")], size=1).para([plain(message)])
+    """A problem, stated once.
+
+    The old version stacked a generic "Something went wrong" heading above the
+    actual message, so every failure read as two lines of which only the
+    second carried information. The message *is* the headline.
+    """
+    card = RichCard().para([plain("⚠️ "), b(message)])
     if hint:
-        card.footer(hint)
+        card.para([i(hint)])
     return card
 
 
 def success_card(message: str, hint: str = "") -> RichCard:
-    card = RichCard().heading([_icon("✅"), b("Done")], size=1).para([plain(message)])
+    """Confirmation, without a redundant "Done" banner above it."""
+    card = RichCard().para([plain("✅ "), b(message)])
     if hint:
-        card.footer(hint)
+        card.para([i(hint)])
     return card
 
 

@@ -2431,3 +2431,168 @@ def test_pillow_is_declared():
 
     text = pathlib.Path("requirements.txt").read_text().lower()
     assert "pillow" in text, "image cards need Pillow at runtime"
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Assistant membership detection
+#
+# ensure_assistant_in_chat passed "@username" as get_chat_member's user_id.
+# That field is typed int, so aiogram rejected the call before it left the
+# process, and the bare except reported "add the assistant" every time —
+# including when the assistant was already in the group. No group could play
+# anything at all.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def _fake_assistant(monkeypatch, user_id=7777777, working=True):
+    from unittest.mock import AsyncMock, MagicMock
+
+    from bot.services import stream as stream_mod
+    from bot.utils import helpers
+
+    monkeypatch.setattr(helpers, "_assistant_id", None)
+    client = MagicMock()
+    if working:
+        me = MagicMock()
+        me.id = user_id
+        client.get_me = AsyncMock(return_value=me)
+    else:
+        client.get_me = AsyncMock(side_effect=RuntimeError("not connected"))
+    monkeypatch.setattr(stream_mod.stream_manager, "_user_client", client, raising=False)
+    return helpers
+
+
+def test_username_is_never_passed_as_a_user_id():
+    """The Bot API rejects a string here; the old code could only ever fail."""
+    import pydantic
+    from aiogram.methods import GetChatMember
+
+    with pytest.raises(pydantic.ValidationError):
+        GetChatMember(chat_id=-1001234, user_id="@SomeAssistant")
+
+
+def test_present_assistant_is_recognised(monkeypatch):
+    """The reported bug: assistant in the group, bot says to add it."""
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock
+
+    helpers = _fake_assistant(monkeypatch)
+    bot = AsyncMock()
+    bot.get_chat_member = AsyncMock(return_value=MagicMock(status="member"))
+
+    result = asyncio.run(helpers.ensure_assistant_in_chat(bot, -1001234))
+    assert result is None, f"assistant is present but was rejected: {result}"
+
+    passed_id = bot.get_chat_member.call_args.args[1]
+    assert isinstance(passed_id, int), "must query by numeric id, not @username"
+
+
+def test_absent_assistant_is_reported(monkeypatch):
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock
+
+    helpers = _fake_assistant(monkeypatch)
+    bot = AsyncMock()
+    bot.get_chat_member = AsyncMock(return_value=MagicMock(status="left"))
+
+    result = asyncio.run(helpers.ensure_assistant_in_chat(bot, -1001234))
+    assert result and "add" in result.lower()
+
+
+def test_unverifiable_assistant_does_not_block_playback(monkeypatch):
+    """A wrong "add the assistant" sends people chasing a problem they lack."""
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    helpers = _fake_assistant(monkeypatch, working=False)
+    bot = AsyncMock()
+
+    assert asyncio.run(helpers.ensure_assistant_in_chat(bot, -1001234)) is None
+    assert not bot.get_chat_member.called, "should not query with an unknown id"
+
+
+def test_assistant_id_is_cached(monkeypatch):
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock
+
+    helpers = _fake_assistant(monkeypatch)
+    bot = AsyncMock()
+    bot.get_chat_member = AsyncMock(return_value=MagicMock(status="member"))
+
+    async def twice():
+        await helpers.ensure_assistant_in_chat(bot, -1)
+        await helpers.ensure_assistant_in_chat(bot, -2)
+
+    asyncio.run(twice())
+
+    from bot.services import stream as stream_mod
+
+    assert stream_mod.stream_manager._user_client.get_me.await_count == 1
+
+
+# ── PyTgCalls failure messages ────────────────────────────────────────────
+
+
+def test_missing_voice_chat_says_so():
+    from pytgcalls.exceptions import NoActiveGroupCall
+
+    from bot.services.callerrors import diagnose
+
+    found = diagnose(NoActiveGroupCall(), "Assistant")
+    assert "voice chat" in found.title.lower()
+    assert "start" in found.hint.lower()
+    assert "NoActiveGroupCall" not in found.title
+
+
+def test_permission_errors_name_the_assistant():
+    from bot.services.callerrors import diagnose
+
+    found = diagnose(Exception("CHAT_ADMIN_REQUIRED"), "Bronzedone")
+    assert "@Bronzedone" in found.title
+    assert "admin" in found.hint.lower()
+
+
+def test_transient_failures_are_marked_retryable():
+    from bot.services.callerrors import diagnose
+
+    assert diagnose(Exception("FLOOD_WAIT_X: wait"), "").retryable
+    assert not diagnose(Exception("CHAT_ADMIN_REQUIRED"), "").retryable
+
+
+def test_unknown_failures_still_get_a_usable_message():
+    from bot.services.callerrors import diagnose
+
+    found = diagnose(Exception("brand new failure mode"), "")
+    assert found.title and found.hint
+    assert "brand new failure mode" not in found.title, "no raw exception text"
+
+
+def test_playback_uses_the_diagnoser():
+    import inspect
+
+    from bot.utils import play_helpers
+
+    source = inspect.getsource(play_helpers.play_track)
+    assert "diagnose(" in source
+    assert "Playback failed: {exc}" not in source, "raw exception was user-facing"
+
+
+# ── Error card layout ─────────────────────────────────────────────────────
+
+
+def test_error_card_leads_with_the_problem():
+    """"Something went wrong" above the real message was pure chrome."""
+    from bot.utils.cards import error_card
+
+    html = error_card("No voice chat is running.", "Start one and retry.").to_html()
+    assert "Something went wrong" not in html
+    assert html.splitlines()[0].strip().endswith("<b>No voice chat is running.</b>")
+    assert len(html.strip().splitlines()) == 2
+
+
+def test_success_card_has_no_redundant_banner():
+    from bot.utils.cards import success_card
+
+    html = success_card("Queue cleared.").to_html()
+    assert "Done" not in html
+    assert "Queue cleared." in html
