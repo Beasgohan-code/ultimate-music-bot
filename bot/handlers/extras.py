@@ -59,7 +59,7 @@ async def cmd_suggest(message: Message) -> None:
     status = await message.answer("💡 <b>Finding suggestions…</b>", parse_mode="HTML")
     suggestions = await get_suggestions(query)
     if not suggestions:
-        await status.edit_text(error_card("No suggestions found."), parse_mode="HTML")
+        await status.edit_text(error_card("No suggestions found.", "Play a few tracks first so I can learn what fits."), parse_mode="HTML")
         return
 
     cache_suggestions(suggestions)

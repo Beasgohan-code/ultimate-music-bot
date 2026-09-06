@@ -159,12 +159,24 @@ def suggestions_card(seed: str, suggestions: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def error_card(message: str) -> str:
-    return f"❌ {bold('Error')}\n\n{bq(esc(message))}"
+def error_card(message: str, hint: str = "") -> str:
+    """HTML error notice.
+
+    Delegates to :mod:`bot.utils.cards` so the bot has exactly one error style.
+    Two same-named builders used to live here and there, and they drifted: this
+    one rendered a bulky "Error" heading while the other rendered a single
+    warning line. Users saw both depending on which handler failed.
+    """
+    from bot.utils.cards import error_card as _card
+
+    return _card(message, hint).to_html()
 
 
-def success_card(message: str) -> str:
-    return f"✅ {bold('Success')}\n\n{bq(esc(message))}"
+def success_card(message: str, hint: str = "") -> str:
+    """HTML success notice — see :func:`error_card`."""
+    from bot.utils.cards import success_card as _card
+
+    return _card(message, hint).to_html()
 
 
 def help_card() -> str:

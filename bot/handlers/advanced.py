@@ -50,7 +50,7 @@ async def cmd_playlist(message: Message) -> None:
     requester = message.from_user.full_name if message.from_user else "Unknown"
     tracks = await get_playlist(query, requester)
     if not tracks:
-        await status.edit_text(error_card("Could not load playlist."), parse_mode="HTML")
+        await status.edit_text(error_card("Could not load playlist.", "The link may be private, region-locked, or empty."), parse_mode="HTML")
         return
 
     chat_id = message.chat.id
@@ -76,7 +76,7 @@ async def cmd_playlist(message: Message) -> None:
                 reply_markup=player_panel_kb(True),
             )
         else:
-            await status.edit_text(error_card("Failed to start playlist."), parse_mode="HTML")
+            await status.edit_text(error_card("Failed to start playlist.", "Make sure a voice chat is running, then try again."), parse_mode="HTML")
 
 
 @router.message(Command("playnow"))
@@ -88,7 +88,7 @@ async def cmd_playnow(message: Message) -> None:
     status = await message.answer("⏳ <b>Loading…</b>", parse_mode="HTML")
     track = await get_stream_url(query)
     if not track:
-        await status.edit_text(error_card("Track not found."), parse_mode="HTML")
+        await status.edit_text(error_card("Track not found.", "That position may have changed — check /queue."), parse_mode="HTML")
         return
     await status.delete()
     await play_track(message, track, force=True)
@@ -103,7 +103,7 @@ async def cmd_playnext(message: Message) -> None:
     status = await message.answer("⏳ <b>Loading…</b>", parse_mode="HTML")
     track = await get_stream_url(query)
     if not track:
-        await status.edit_text(error_card("Track not found."), parse_mode="HTML")
+        await status.edit_text(error_card("Track not found.", "That position may have changed — check /queue."), parse_mode="HTML")
         return
     await status.delete()
     await play_track(message, track, front=True)
@@ -140,7 +140,7 @@ async def cmd_mood(message: Message) -> None:
     status = await message.answer(f"🎭 <b>Loading {query} mood…</b>", parse_mode="HTML")
     tracks = await get_mood_tracks(query, limit=8)
     if not tracks:
-        await status.edit_text(error_card("No tracks found for this mood."), parse_mode="HTML")
+        await status.edit_text(error_card("No tracks found for this mood.", "Try /mood chill, focus, party, sad or hype."), parse_mode="HTML")
         return
 
     from bot.utils.helpers import cache_search_results

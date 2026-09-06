@@ -76,6 +76,15 @@ keep those ids valid across restarts.
 `/broadcast` (with `-users` / `-pin` flags), `/gban`, `/gbanlist`, `/blacklistchat`,
 `/maintenance`, `/stopall`, `/activevc`, `/logs`, `/sysinfo`, `/sudolist`.
 
+**Assistant account** — `/assistant` shows status; `/setname`, `/setbio`, `/setpfp`
+and `/delpfp` edit its profile; `/leaveall` makes it leave every idle chat
+(chats with a live stream are skipped); `/rmdownloads` clears cached audio and
+thumbnails.
+
+Broadcasts are paced under Telegram's rate limit and retry on `429`. Chats that
+block the bot are recorded and skipped next time, and un-skipped automatically
+if they talk to the bot again.
+
 ---
 
 ## Setup
@@ -340,9 +349,11 @@ main.py                  entry point — logging, routers, command scopes, shutd
 bot/
   config.py              env parsing, validation, warnings
   handlers/              play · controls · advanced · moderation · grouptools
-                         settings · admin · callbacks · inline_mode · start · misc
+                         settings · admin · assistant_admin · callbacks
+                         inline_mode · start · misc
   services/              stream (PyTgCalls) · queue · database · moderation
                          i18n · lyrics · history · stats · autoleave
+                         delivery (rate limits, retries, dead-chat pruning)
   middlewares/           gatekeeper (bans, throttle, disabled cmds) · enforcement
   utils/                 rich (card builder) · cards · guards · formatters
   keyboards/             inline player, settings, help, moderation

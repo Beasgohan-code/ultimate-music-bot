@@ -306,7 +306,7 @@ async def cmd_song(message: Message) -> None:
         return
 
     if not config.enable_downloads:
-        await send_card(message, error_card("Downloads are disabled on this instance."))
+        await send_card(message, error_card("Downloads are disabled on this instance.", "The operator can enable them with ENABLE_DOWNLOADS=1."))
         return
 
     status = await message.answer("🔎 <b>Finding that track…</b>", parse_mode="HTML")
@@ -341,7 +341,7 @@ async def cmd_song(message: Message) -> None:
         return
     except Exception as exc:
         logger.error("Song delivery failed: %s", exc)
-        await send_card(message, error_card("Something went wrong sending that file."), edit=status)
+        await send_card(message, error_card("Something went wrong sending that file.", "It may be larger than Telegram's 50 MB bot limit."), edit=status)
         return
 
     try:
@@ -474,7 +474,7 @@ async def _may_skip_now(message: Message) -> bool:
         return True
 
     if not is_new:
-        await send_card(message, error_card("You have already voted to skip."))
+        await send_card(message, error_card("You have already voted to skip.", "Waiting for other listeners to agree."))
         return False
 
     await send_card(

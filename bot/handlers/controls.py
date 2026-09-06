@@ -410,7 +410,7 @@ async def cmd_voteskip_config(message: Message) -> None:
     from bot.utils.cards import error_card, success_card
 
     if not is_group(message):
-        await send_card(message, error_card("Vote-skip only applies to groups."))
+        await send_card(message, error_card("Vote-skip only applies to groups.", "In a private chat, just use /skip."))
         return
 
     chat_id = message.chat.id
@@ -454,10 +454,10 @@ async def cmd_voteskip_config(message: Message) -> None:
     try:
         pct = float(arg.rstrip("%"))
     except ValueError:
-        await send_card(message, error_card("Usage: /voteskip on|off|<percent>"))
+        await send_card(message, error_card("I did not understand that setting.", "Usage: /voteskip on | off | 50 (percent needed to skip)."))
         return
     if not 10 <= pct <= 100:
-        await send_card(message, error_card("Pick a percentage between 10 and 100."))
+        await send_card(message, error_card("Pick a percentage between 10 and 100.", "50 means half the listeners must agree."))
         return
     ratio = await voteskip.set_ratio(chat_id, pct / 100)
     await send_card(message, success_card(f"Vote threshold set to {int(ratio * 100)}% of listeners."))
@@ -555,7 +555,7 @@ async def cmd_schedule(message: Message, bot: Bot) -> None:
     from bot.utils.cards import error_card
 
     if not is_group(message):
-        await send_card(message, error_card("Scheduling only works in groups with a voice chat."))
+        await send_card(message, error_card("Scheduling only works in groups.", "Add me to a group with a voice chat to schedule playback."))
         return
 
     args = (message.text or "").split(maxsplit=1)
@@ -607,7 +607,7 @@ async def cmd_schedule(message: Message, bot: Bot) -> None:
         return
 
     if not job:
-        await send_card(message, error_card("I could not read that time."))
+        await send_card(message, error_card("I could not read that time.", "Try 21:30, 9:30pm, or +45m for a relative time."))
         return
 
     await send_card(

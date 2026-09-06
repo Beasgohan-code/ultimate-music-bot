@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import platform
 import sys
@@ -13,13 +14,13 @@ from aiogram.filters import Command
 from aiogram.types import Message
 
 from bot.config import config
-from bot.services import errors
+from bot.services import delivery, errors
 from bot.services.database import database
 from bot.services.queue import queue_manager
 from bot.services.stats import bot_stats
 from bot.services.stream import stream_manager
 from bot.utils.guards import extract_target, is_sudo, mention_id
-from bot.utils.cards import success_card
+from bot.utils.cards import meter, success_card
 from bot.utils.rich import RichCard, b, c, i, plain, send_card, send_html
 
 logger = logging.getLogger(__name__)
@@ -72,50 +73,60 @@ async def cmd_broadcast(message: Message, bot: Bot) -> None:
     if include_users:
         targets += await database.known_users()
     targets = list(dict.fromkeys(targets))
-    if not targets:
-        await send_html(message, "📢 <b>No chats recorded yet.</b>")
+
+    # Chats that previously blocked us or vanished are skipped outright, so a
+    # long-lived bot doesn't spend most of a broadcast on 403s.
+    reachable = await delivery.deliverable_chats(targets)
+    skipped = len(targets) - len(reachable)
+    if not reachable:
+        await send_html(message, "📢 <b>No reachable chats recorded yet.</b>")
         return
 
-    status = await message.answer(
-        f"📢 <b>Broadcasting to {len(targets)} chats…</b>", parse_mode="HTML"
-    )
-    sent = failed = 0
-    for idx, chat_id in enumerate(targets, 1):
-        try:
-            if reply:
-                out = await reply.copy_to(chat_id)
-            else:
-                out = await bot.send_message(chat_id, body, parse_mode="HTML")
-            sent += 1
-            if do_pin:
-                try:
-                    mid = getattr(out, "message_id", None)
-                    if mid:
-                        await bot.pin_chat_message(chat_id, mid, disable_notification=True)
-                except Exception:
-                    pass
-        except Exception:
-            failed += 1
-        # Stay well inside Telegram's ~30 msg/sec ceiling.
-        await asyncio.sleep(0.06)
-        if idx % 25 == 0:
-            try:
-                await status.edit_text(
-                    f"📢 <b>Broadcasting…</b> {idx}/{len(targets)} "
-                    f"(<code>{sent}</code> ok, <code>{failed}</code> failed)",
-                    parse_mode="HTML",
-                )
-            except Exception:
-                pass
+    header = f"📢 <b>Broadcasting to {len(reachable)} chats…</b>"
+    if skipped:
+        header += f"\n<i>Skipping {skipped} known-unreachable.</i>"
+    status = await message.answer(header, parse_mode="HTML")
+
+    async def deliver(chat_id: int):
+        if reply:
+            out = await reply.copy_to(chat_id)
+        else:
+            out = await bot.send_message(chat_id, body, parse_mode="HTML")
+        if do_pin:
+            mid = getattr(out, "message_id", None)
+            if mid:
+                # Pinning is best-effort: failing it must not fail the delivery.
+                with contextlib.suppress(Exception):
+                    await bot.pin_chat_message(chat_id, mid, disable_notification=True)
+        return out
+
+    async def show_progress(report: delivery.BroadcastReport) -> None:
+        done = report.sent + report.failed + report.blocked
+        bar = meter(done, report.total, width=12)
+        with contextlib.suppress(Exception):
+            await status.edit_text(
+                f"📢 <b>Broadcasting…</b>\n"
+                f"<code>{bar}</code> {done}/{report.total}\n"
+                f"✅ {report.sent}   🚫 {report.blocked}   ⚠️ {report.failed}"
+                + (f"   ·   {report.rate:.1f}/s" if report.rate else ""),
+                parse_mode="HTML",
+            )
+
+    report = await delivery.Broadcaster().run(reachable, deliver, on_progress=show_progress)
+
+    # Remember the chats that are gone so the next broadcast is faster.
+    if report.pruned:
+        await delivery.prune_dead_chats(report.pruned)
 
     card = (
         RichCard()
         .heading([_icon("📢"), b("Broadcast Complete")], size=1)
-        .table(
-            ["Result", "Count"],
-            [["Delivered", c(str(sent))], ["Failed", c(str(failed))], ["Total", c(str(len(targets)))]],
-        )
+        .table(["Result", "Count"], [[label, c(value)] for label, value in report.as_rows()])
     )
+    if report.pruned:
+        card.paragraph(
+            [i(f"{len(report.pruned)} unreachable chats won't be retried next time.")]
+        )
     try:
         await status.edit_text(card.to_html(), parse_mode="HTML")
     except Exception:
@@ -413,6 +424,11 @@ async def cmd_sudo_info(message: Message) -> None:
                 [c("/sysinfo"), "Runtime and resource usage"],
                 [c("/logs"), "Fetch the log file"],
                 [c("/sudolist"), "Show configured owners"],
+                [c("/assistant"), "Assistant account status"],
+                [c("/setname  /setbio"), "Rename the assistant account"],
+                [c("/setpfp  /delpfp"), "Change the assistant's avatar"],
+                [c("/leaveall"), "Assistant leaves all idle chats"],
+                [c("/rmdownloads"), "Clear cached audio and thumbnails"],
             ],
         )
         .footer(f"Storage backend: {database.backend}")

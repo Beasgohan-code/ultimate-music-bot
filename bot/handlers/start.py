@@ -3,16 +3,60 @@
 from __future__ import annotations
 
 from aiogram import F, Router
-from aiogram.filters import Command, CommandStart
+from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import CallbackQuery, Message
 
 from bot.config import config
-from bot.keyboards.inline import features_kb, main_menu_kb, settings_kb, start_kb
-from bot.utils.cards import feature_card, welcome_card
+from bot.keyboards.inline import (
+    features_kb,
+    main_menu_kb,
+    settings_kb,
+    start_kb,
+    track_links_kb,
+)
+from bot.utils.cards import error_card, feature_card, track_info_card, welcome_card
 from bot.utils.formatters import welcome_message
 from bot.utils.rich import send_card
 
 router = Router(name="start")
+
+
+@router.message(CommandStart(deep_link=True, magic=F.args.startswith("info_")))
+async def cmd_start_track_info(message: Message, command: CommandObject) -> None:
+    """Deep link from a track title: /start info_<id> opens a full info card.
+
+    Ported from FallenMusic. It lets a now-playing title in a *group* link to a
+    detailed card in PM, instead of dumping metadata into the group.
+    """
+    track_id = (command.args or "")[len("info_") :].strip()
+    if not track_id:
+        await cmd_start(message)
+        return
+
+    status = await message.answer("🔎 <b>Looking that up…</b>", parse_mode="HTML")
+    from bot.services import music
+
+    track = await music.get_track(f"https://www.youtube.com/watch?v={track_id}")
+    if not track:
+        hint = music.last_error() or "That track may have been removed or made private."
+        await status.edit_text(
+            error_card("I could not load that track.", hint).to_html(), parse_mode="HTML"
+        )
+        return
+
+    card = track_info_card(track)
+    kb = track_links_kb(track)
+    thumb = track.get("thumbnail")
+    if thumb:
+        try:
+            await message.answer_photo(
+                thumb, caption=card.to_html(), parse_mode="HTML", reply_markup=kb
+            )
+            await status.delete()
+            return
+        except Exception:
+            pass  # thumbnail 404 or too large — the text card still works
+    await status.edit_text(card.to_html(), parse_mode="HTML", reply_markup=kb)
 
 
 @router.message(CommandStart())

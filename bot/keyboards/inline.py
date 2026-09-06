@@ -438,3 +438,44 @@ def os_dashboard_kb(is_playing: bool = False, is_paused: bool = False) -> Inline
             ],
         ]
     )
+
+
+def track_links_kb(track: dict) -> InlineKeyboardMarkup:
+    """Buttons under a track-info card.
+
+    Shown when someone opens a ``/start info_<id>`` deep link, so the actions
+    are "listen elsewhere" and "play it here" rather than player transport
+    controls — there is nothing playing in a PM to control.
+    """
+    rows: list[list[InlineKeyboardButton]] = []
+
+    url = track.get("url") or ""
+    if url:
+        source = "ʏᴏᴜᴛᴜʙᴇ"
+        lowered = url.lower()
+        if "soundcloud" in lowered:
+            source = "sᴏᴜɴᴅᴄʟᴏᴜᴅ"
+        elif "spotify" in lowered:
+            source = "sᴘᴏᴛɪғʏ"
+        rows.append([InlineKeyboardButton(text=f"▶ ᴏᴘᴇɴ ᴏɴ {source}", url=url)])
+
+    # Prefill the query so the user can drop this track into any group.
+    title = (track.get("title") or "").strip()
+    if title:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="🎧 ᴘʟᴀʏ ɪɴ ᴀ ɢʀᴏᴜᴘ",
+                    switch_inline_query=title[:64],
+                )
+            ]
+        )
+
+    support = _tg_link(config.support_chat) if getattr(config, "support_chat", "") else ""
+    last: list[InlineKeyboardButton] = []
+    if support:
+        last.append(InlineKeyboardButton(text="✨ sᴜᴘᴘᴏʀᴛ", url=support))
+    last.append(InlineKeyboardButton(text="✖ ᴄʟᴏsᴇ", callback_data="ui:close"))
+    rows.append(last)
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)

@@ -113,5 +113,10 @@ class GatekeeperMiddleware(BaseMiddleware):
                 if now - self._last_touch[key] > 60:
                     self._last_touch[key] = now
                     await database.touch_chat(chat.id, chat.title or "")
+                    # A chat that is talking to us is reachable again, so
+                    # clear any stale "unreachable" flag from a past broadcast.
+                    from bot.services.delivery import revive_chat
+
+                    await revive_chat(chat.id)
         except Exception as exc:
             logger.debug("Bookkeeping failed: %s", exc)

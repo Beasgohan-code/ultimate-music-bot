@@ -40,6 +40,7 @@ from bot.config import DATA_DIR, config  # noqa: E402
 from bot.handlers import (  # noqa: E402
     admin,
     advanced,
+    assistant_admin,
     callbacks,
     controls,
     dashboard,
@@ -523,6 +524,7 @@ async def main() -> None:
         settings_handlers.router,
         moderation_handlers.router,
         admin.router,
+        assistant_admin.router,
         controls.router,
         play.router,
         advanced.router,

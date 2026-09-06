@@ -2916,3 +2916,323 @@ def test_progress_task_is_always_cancelled():
     source = inspect.getsource(play._resolve_and_play)
     assert "finally:" in source
     assert "progress.cancel()" in source, "a live task would overwrite the result"
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Reliable delivery
+#
+# Before bot/services/delivery.py nothing in the bot caught TelegramRetryAfter.
+# A broadcast that tripped Telegram's ~30 msg/s ceiling counted every
+# rate-limited chat as a permanent failure and moved on.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def test_rate_limiter_paces_sends():
+    import asyncio
+    import time
+
+    from bot.services.delivery import RateLimiter
+
+    async def burst():
+        limiter = RateLimiter(rate=50.0)  # 20ms apart
+        started = time.monotonic()
+        for _ in range(5):
+            await limiter.acquire()
+        return time.monotonic() - started
+
+    elapsed = asyncio.run(burst())
+    # Four gaps of 20ms; the first acquire is free.
+    assert elapsed >= 0.07, f"sends were not paced ({elapsed:.3f}s)"
+
+
+def test_retry_after_is_honoured_then_retried():
+    import asyncio
+
+    from aiogram.exceptions import TelegramRetryAfter
+
+    from bot.services.delivery import send_safe
+
+    calls = {"n": 0}
+
+    async def flaky():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise TelegramRetryAfter(
+                method=None, message="Too Many Requests: retry after 1", retry_after=1
+            )
+        return "delivered"
+
+    outcome = asyncio.run(send_safe(flaky, chat_id=42))
+
+    assert outcome.ok, "a 429 is temporary; the send must be retried"
+    assert outcome.result == "delivered"
+    assert outcome.attempts == 2
+    assert calls["n"] == 2
+
+
+def test_absurd_retry_after_is_not_waited_out():
+    """A multi-hour 429 must not freeze a broadcast."""
+    import asyncio
+
+    from aiogram.exceptions import TelegramRetryAfter
+
+    from bot.services.delivery import send_safe
+
+    async def blocked():
+        raise TelegramRetryAfter(
+            method=None, message="Too Many Requests: retry after 4000", retry_after=4000
+        )
+
+    outcome = asyncio.run(send_safe(blocked, chat_id=1))
+    assert not outcome.ok
+    assert not outcome.permanent, "a long 429 is still not permanent"
+
+
+def test_blocked_users_are_permanent_not_retried():
+    import asyncio
+
+    from aiogram.exceptions import TelegramForbiddenError
+
+    from bot.services.delivery import send_safe
+
+    calls = {"n": 0}
+
+    async def blocked():
+        calls["n"] += 1
+        raise TelegramForbiddenError(method=None, message="Forbidden: bot was blocked by the user")
+
+    outcome = asyncio.run(send_safe(blocked, chat_id=7))
+
+    assert not outcome.ok
+    assert outcome.permanent, "retrying a block can never succeed"
+    assert calls["n"] == 1, "a permanent failure must not be retried"
+
+
+def test_permanent_classification():
+    from aiogram.exceptions import TelegramBadRequest, TelegramNotFound
+
+    from bot.services.delivery import is_permanent
+
+    assert is_permanent(TelegramNotFound(method=None, message="chat not found"))
+    assert is_permanent(
+        TelegramBadRequest(method=None, message="Bad Request: chat not found")
+    )
+    assert is_permanent(
+        TelegramBadRequest(method=None, message="Forbidden: bot was kicked from the group")
+    )
+    assert not is_permanent(
+        TelegramBadRequest(method=None, message="Bad Request: message text is empty")
+    )
+
+
+def test_broadcast_separates_blocked_from_failed():
+    import asyncio
+
+    from aiogram.exceptions import TelegramForbiddenError, TelegramServerError
+
+    from bot.services.delivery import Broadcaster
+
+    async def send(chat_id: int):
+        if chat_id == 2:
+            raise TelegramForbiddenError(method=None, message="bot was blocked by the user")
+        if chat_id == 3:
+            raise TelegramServerError(method=None, message="Internal Server Error")
+        return "ok"
+
+    async def run():
+        return await Broadcaster(progress_every=1).run([1, 2, 3, 4], send)
+
+    report = asyncio.run(run())
+
+    assert report.sent == 2
+    assert report.blocked == 1, "a block is not a failure — it is a prune signal"
+    assert report.failed == 1
+    assert report.pruned == [2]
+    assert report.total == 4
+
+
+def test_broadcast_survives_a_broken_progress_callback():
+    """A failed status edit must not abort delivery."""
+    import asyncio
+
+    from bot.services.delivery import Broadcaster
+
+    async def send(chat_id: int):
+        return "ok"
+
+    async def boom(report):
+        raise RuntimeError("message to edit not found")
+
+    async def run():
+        return await Broadcaster(progress_every=1).run([1, 2, 3], send, on_progress=boom)
+
+    assert asyncio.run(run()).sent == 3
+
+
+def test_broadcast_uses_the_delivery_layer():
+    import inspect
+
+    from bot.handlers import admin
+
+    source = inspect.getsource(admin.cmd_broadcast)
+    assert "delivery" in source, "broadcast must not hand-roll its own send loop"
+    assert "deliverable_chats" in source, "known-dead chats should be skipped"
+    assert "prune_dead_chats" in source
+
+
+def test_dead_chats_are_skipped_then_revived(tmp_path, monkeypatch):
+    import asyncio
+
+    from bot.services import delivery
+    from bot.services.database import database
+
+    async def scenario():
+        await database.set_chat_value(-100, "delivery_dead", 111.0)
+        await database.set_chat_value(-200, "delivery_dead", 0)
+        alive = await delivery.deliverable_chats([-100, -200, -300])
+        await delivery.revive_chat(-100)
+        after = await delivery.deliverable_chats([-100, -200, -300])
+        return alive, after
+
+    alive, after = asyncio.run(scenario())
+
+    assert -100 not in alive, "a chat that blocked us should be skipped"
+    assert -200 in alive and -300 in alive
+    assert -100 in after, "talking to us again must restore delivery"
+
+
+def test_gatekeeper_revives_chats():
+    import inspect
+
+    from bot.middlewares.gatekeeper import GatekeeperMiddleware
+
+    source = inspect.getsource(GatekeeperMiddleware._record)
+    assert "revive_chat" in source
+
+
+def test_assistant_admin_commands_are_registered():
+    from bot.handlers import assistant_admin
+
+    registered = set()
+    for handler in assistant_admin.router.message.handlers:
+        for f in handler.filters or []:
+            registered |= set(getattr(f.callback, "commands", None) or [])
+
+    for command in ("setpfp", "setbio", "setname", "delpfp", "leaveall", "rmdownloads"):
+        assert command in registered, f"/{command} was not registered"
+
+
+def test_assistant_commands_are_sudo_gated():
+    """These drive a real user account — they must never be public."""
+    import inspect
+
+    from bot.handlers import assistant_admin
+
+    for name in ("cmd_setpfp", "cmd_setbio", "cmd_setname", "cmd_leaveall", "cmd_clearcache"):
+        source = inspect.getsource(getattr(assistant_admin, name))
+        assert "_sudo_only" in source, f"{name} is not sudo gated"
+
+
+def test_leaveall_skips_chats_that_are_playing():
+    import inspect
+
+    from bot.handlers import assistant_admin
+
+    source = inspect.getsource(assistant_admin.cmd_leaveall)
+    assert "active_chats" in source, "leaving a chat mid-stream kills playback"
+
+
+def test_assistant_admin_uses_the_active_chats_property():
+    """It is a property; calling it returns a list, not a bool."""
+    from bot.services.stream import stream_manager
+
+    assert isinstance(stream_manager.active_chats, list)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Message presentation
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def test_error_styles_are_unified():
+    """Two same-named builders used to render two different error styles."""
+    from bot.utils.cards import error_card as card_version
+    from bot.utils.formatters import error_card as fmt_version
+
+    text = fmt_version("Track not found.")
+    assert isinstance(text, str), "the formatters version must stay str-returning"
+    assert text == card_version("Track not found.").to_html()
+    assert "❌" not in text, "the legacy bulky Error heading should be gone"
+
+
+def test_formatters_error_card_accepts_a_hint():
+    from bot.utils.formatters import error_card, success_card
+
+    assert "Set COOKIES_DATA." in error_card("Blocked.", "Set COOKIES_DATA.")
+    assert "Saved." in success_card("Saved.")
+
+
+def test_errors_tell_the_user_what_to_do():
+    """A bare "Track not found." leaves the user with no next step."""
+    import pathlib
+    import re
+
+    bare = []
+    for path in pathlib.Path("bot/handlers").glob("*.py"):
+        for match in re.finditer(r'error_card\(\s*"([^"]{10,})"\s*\)', path.read_text()):
+            bare.append(f"{path.name}: {match.group(1)}")
+
+    # Self-explanatory: the message already contains the valid range or the
+    # entire state being reported. A hint would just restate it.
+    allowed = {
+        "controls.py: Nothing is playing right now.",
+        "play.py: Tell me what to play.",
+        "controls.py: That offset is out of range (UTC-12:00 … UTC+14:00).",
+        "assistant_admin.py: The assistant has no profile photo to delete.",
+    }
+    unexplained = [entry for entry in bare if entry not in allowed]
+    assert not unexplained, "these errors need an actionable hint: " + "; ".join(unexplained)
+
+
+def test_track_info_deep_link_is_handled():
+    """Now-playing titles link to /start info_<id>; it must resolve."""
+    from bot.handlers import start
+
+    names = {h.callback.__name__ for h in start.router.message.handlers}
+    assert "cmd_start_track_info" in names
+    assert "cmd_start" in names, "the plain /start must still work"
+
+
+def test_deep_link_handler_is_registered_before_plain_start():
+    """aiogram picks the first match; the generic /start would swallow it."""
+    from bot.handlers import start
+
+    order = [h.callback.__name__ for h in start.router.message.handlers]
+    assert order.index("cmd_start_track_info") < order.index("cmd_start")
+
+
+def test_track_links_keyboard():
+    from bot.keyboards.inline import track_links_kb
+
+    kb = track_links_kb({"title": "Some Song", "url": "https://soundcloud.com/x/y"})
+    labels = [button.text for row in kb.inline_keyboard for button in row]
+    assert any("sᴏᴜɴᴅᴄʟᴏᴜᴅ" in label for label in labels), "the button should name the source"
+    assert any("ᴄʟᴏsᴇ" in label for label in labels)
+
+
+def test_track_links_keyboard_survives_a_bare_track():
+    """Search results and cached entries don't always carry a url."""
+    from bot.keyboards.inline import track_links_kb
+
+    kb = track_links_kb({})
+    assert kb.inline_keyboard, "a close button should always remain"
+
+
+def test_close_button_has_a_handler():
+    from bot.handlers import callbacks
+
+    found = False
+    for handler in callbacks.router.callback_query.handlers:
+        if "cb_close" == handler.callback.__name__:
+            found = True
+    assert found, "ui:close would silently do nothing"

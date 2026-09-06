@@ -562,3 +562,22 @@ async def cb_settings_video(query: CallbackQuery) -> None:
         f"🎬 Default video: <b>{'enabled' if enabled else 'disabled'}</b>",
         parse_mode="HTML",
     )
+
+
+@router.callback_query(F.data == "ui:close")
+async def cb_close(query: CallbackQuery) -> None:
+    """Dismiss a card. FallenMusic's ✖ close button.
+
+    Deleting can fail for reasons the user cannot act on (message older than
+    48h, or the bot lost delete rights), so fall back to stripping the keyboard
+    — the card stops being interactive either way.
+    """
+    import contextlib
+
+    try:
+        await query.message.delete()
+    except Exception:
+        with contextlib.suppress(Exception):
+            await query.message.edit_reply_markup(reply_markup=None)
+    with contextlib.suppress(Exception):
+        await query.answer()
