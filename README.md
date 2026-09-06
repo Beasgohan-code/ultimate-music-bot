@@ -185,11 +185,34 @@ the symbols py-tgcalls needs, and locates or installs FFmpeg. A misconfigured
 dependency produces an explicit message with the fix, rather than a traceback
 from deep inside a library.
 
-### Checking your cookies
+### When YouTube blocks the server
+
+Hosts like Render, Railway and Heroku run on datacenter IP ranges that YouTube
+routinely refuses with *"Sign in to confirm you're not a bot"*. This is about
+the address the request comes from, not about your bot.
+
+**No configuration is needed for this.** When a request is refused, playback
+falls back to public [Invidious](https://invidious.io) and
+[Piped](https://piped.video) front-ends, which perform the extraction on their
+own infrastructure and hand back a stream. Their IPs are not yours, so the
+block does not apply. `/sysinfo` shows the mirror pool.
+
+Mirrors are a fallback, not the default path — yt-dlp direct is tried first
+because it is faster and higher quality whenever the IP is not blocked. They
+serve audio; `/vplay` and live streams still need a working direct route.
+
+Two things help if mirrors are also having a bad day:
+
+- `YTDLP_PROXY` — route extraction through a residential proxy.
+- Cookies — optional, and described below. They work, but they expire in
+  weeks, they are equivalent to your password, and exporting them needs a
+  desktop browser. Try the other two first.
+
+### Cookies (optional)
 
 Cookies expire. An expired jar is worse than no jar at all: yt-dlp silently
 drops the dead entries, sends the request unauthenticated, and the failure
-looks identical to having no cookies configured. The startup banner now says
+looks identical to having no cookies configured. The startup banner says
 which it is:
 
 ```
@@ -203,7 +226,9 @@ cookie — those carry the login. A file full of `VISITOR_INFO1_LIVE`, `PREF` an
 `YSC` is not signed in to anything, however long it is.
 
 Set `COOKIES_DIR` to a folder of several jars to rotate between accounts, so no
-single one carries every request.
+single one carries every request. The bot owner can also upload a jar at
+runtime with `/cookies` in a private chat, which avoids a redeploy — but an
+empty cookie pool is a perfectly normal, supported configuration.
 
 **Never paste cookies into a chat, an issue or a commit.** They are equivalent
 to your password and they do not need your 2FA. If you have posted them
@@ -252,6 +277,9 @@ the assistant has to rejoin the voice chat, which only `/play` can do — so the
 restore notice says exactly that rather than implying the music resumed.
 Snapshots older than an hour are discarded, and signed stream URLs are never
 written, since a restored one would fail like a bug rather than an expiry.
+Restored tracks are re-resolved at the moment they play — the same mechanism
+covers a track sitting far down a long queue, whose URL expires while it
+waits. Sending `/play` with no query starts a queue that came back.
 
 ## Autoplay
 
@@ -338,6 +366,11 @@ Paste a link from any of these and the bot works out what to do:
 | **Deezer** | ✅ | ✅ | Fully public API, no key needed |
 | Direct URLs, m3u8, uploaded files | ✅ | — | Played as-is |
 
+Share-sheet short links (`spotify.link`, `on.soundcloud.com`,
+`deezer.page.link`) are followed to the real URL first — that is what the
+share button on a phone actually produces, and the track id only exists after
+the redirect.
+
 Spotify, Apple Music and Deezer stream DRM-protected audio, so **nothing** can
 download the file itself — yt-dlp ships no Spotify extractor at all. What these
 links *do* carry is metadata, so the bot reads the title and artist and matches
@@ -355,17 +388,23 @@ rather than failing with a generic error.
 ## When YouTube blocks your server
 
 Cloud IPs get flagged, and then extraction fails for every query. The bot
-distinguishes this from a genuine no-results and tells you which it hit. In
-order of effectiveness:
+distinguishes this from a genuine no-results and tells you which it hit.
+
+The first line of defence needs no configuration: a refused request retries
+through public **Invidious / Piped** mirrors, which extract on their own IPs.
+Most deployments never need anything below this table.
 
 | Setting | What it does |
 |---|---|
-| `COOKIES_FILE` | Cookies exported from a logged-in browser (Netscape format). Most effective, and also unlocks age-restricted videos. Use a throwaway account |
-| `COOKIES_DATA` | The same jar inline, for hosts with nowhere to put a file. Raw or base64; written to `data/cookies.txt` at startup |
+| *(nothing)* | Public mirrors, tried automatically on a block. Audio only |
 | `YTDLP_PROXY` | Routes extraction through a residential proxy |
+| `COOKIES_FILE` | Cookies from a logged-in browser (Netscape format). Also unlocks age-restricted videos, but expires in weeks — use a throwaway account |
+| `COOKIES_DATA` | The same jar inline, for hosts with nowhere to put a file. Raw or base64; written to `data/cookies.txt` at startup |
 | `YTDLP_JS_RUNTIME` | Pins the JS runtime. Blank autodetects and falls back to bundled Node; `none` disables |
 
-Cookies and proxy apply to streaming, search *and* `/song` downloads.
+Cookies and proxy apply to streaming, search *and* `/song` downloads. Mirrors
+cover streaming and search; `/song`, `/vplay` and live streams still need a
+working direct route.
 
 If YouTube stays blocked, searches automatically fall back to **SoundCloud**,
 which runs on unrelated infrastructure. A smaller catalogue beats a bot that
