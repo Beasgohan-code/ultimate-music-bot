@@ -662,6 +662,9 @@ async def resolve_query(query: str) -> str:
     """
     from bot.services import platforms
 
+    if platforms.is_short_link(query):
+        query = await platforms.expand(query)
+
     if platforms.detect(query):
         resolved = await platforms.resolve(query)
         if resolved:

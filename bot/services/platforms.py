@@ -124,6 +124,57 @@ def unsupported_service(url: str) -> str:
 # ──────────────────────────────────────────────────────────────────────────
 
 
+#: Share-sheet shorteners. The button people actually press on a phone emits
+#: one of these, and none of them contain the track id -- it only appears
+#: after a redirect, so these have to be expanded before anything can parse.
+_SHORTENERS = (
+    "spotify.link",
+    "spotify.app.link",
+    "on.soundcloud.com",
+    "deezer.page.link",
+    "dzr.page.link",
+    "music.apple.com/redirect",
+    "sptfy.com",
+)
+
+
+def is_short_link(url: str) -> bool:
+    low = (url or "").lower()
+    return any(host in low for host in _SHORTENERS)
+
+
+async def expand(url: str) -> str:
+    """Follow a share-sheet shortener to the real link.
+
+    Returns the original URL unchanged on any failure: a shortener that does
+    not resolve should degrade to "we don't recognise this", never to a crash.
+    """
+    if not is_short_link(url):
+        return url
+    try:
+        async with aiohttp.ClientSession(timeout=_TIMEOUT) as session:
+            # HEAD first: it is enough to read the redirect chain and avoids
+            # pulling a full page. Some shorteners only answer GET, so fall
+            # back to one.
+            for method in (session.head, session.get):
+                try:
+                    async with method(
+                        url, headers={"User-Agent": _UA}, allow_redirects=True
+                    ) as resp:
+                        final = str(resp.url)
+                        if final and not is_short_link(final):
+                            logger.debug("Expanded %s -> %s", url, final)
+                            return final
+                except (aiohttp.ClientError, asyncio.TimeoutError):
+                    continue
+    except Exception as exc:
+        # A redirect is a network boundary on the /play hot path. Anything
+        # unexpected here (bad hostname, odd scheme) must degrade to "we
+        # don't recognise this link", never take the handler down.
+        logger.debug("Could not expand %s: %s", url, exc)
+    return url
+
+
 async def _get_json(url: str, headers: dict[str, str] | None = None, **kwargs: Any) -> Any:
     # Merge rather than override: callers pass an Authorization header and
     # would otherwise collide with the default User-Agent.
@@ -491,11 +542,17 @@ _RESOLVERS = {
 
 async def resolve(url: str) -> Resolved | None:
     """Resolve a supported music link to playable metadata."""
+    original = url
+    if is_short_link(url):
+        # The share button on a phone emits a shortener with no id in it.
+        # Expand first or every mobile-shared link looks unrecognised.
+        url = await expand(url)
+
     platform = detect(url)
     if not platform:
         return None
 
-    cached = _cache.get(url)
+    cached = _cache.get(original)
     if cached and cached[0] > time.time():
         return cached[1]
 
@@ -506,7 +563,9 @@ async def resolve(url: str) -> Resolved | None:
         return None
 
     if result and result.tracks:
-        _cache[url] = (time.time() + _CACHE_TTL, result)
+        # Key on what the caller passed: a second paste of the same short
+        # link should hit the cache instead of redirecting again.
+        _cache[original] = (time.time() + _CACHE_TTL, result)
         # Keep the cache from growing without bound on a busy bot.
         if len(_cache) > 512:
             for key in sorted(_cache, key=lambda k: _cache[k][0])[:128]:

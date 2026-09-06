@@ -250,6 +250,14 @@ async def _play_body(
     live: bool = False,
     queue_only: bool = False,
 ) -> None:
+    if platforms.is_short_link(query):
+        # A phone share button hides the real link behind a redirect, so
+        # nothing -- not the platform importer, not yt-dlp -- can act on it
+        # until it is expanded. Do it once here so both paths see the real
+        # URL: what comes out may not even be ours (on.soundcloud.com becomes
+        # a SoundCloud link yt-dlp handles natively).
+        query = await platforms.expand(query)
+
     if not live and await _import_platform_link(
         message, query, video=video, status=status, queue_only=queue_only
     ):

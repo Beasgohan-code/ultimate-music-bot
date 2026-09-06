@@ -5235,3 +5235,82 @@ def test_bare_play_resumes_a_queue_that_survived_a_restart():
         await queue_manager.reset(chat)
 
     asyncio.run(scenario())
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Share-sheet short links
+#
+# The button people actually press on a phone emits spotify.link/… , which
+# contains no track id — it only appears after a redirect.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def test_share_sheet_shorteners_are_recognised():
+    from bot.services import platforms
+
+    for short in (
+        "https://spotify.link/aBcD",
+        "https://spotify.app.link/x",
+        "https://on.soundcloud.com/xyz",
+        "https://deezer.page.link/q",
+    ):
+        assert platforms.is_short_link(short) is True, short
+    for full in ("https://open.spotify.com/track/x", "just a song name", ""):
+        assert platforms.is_short_link(full) is False, full
+
+
+def test_a_shortened_spotify_link_reaches_the_spotify_resolver():
+    """detect() cannot see a track id that is hidden behind a redirect."""
+    import asyncio
+    from unittest.mock import patch
+
+    from bot.services import platforms
+
+    real = "https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT"
+    assert platforms.detect("https://spotify.link/aBcD") == "", "nothing to detect yet"
+
+    seen = {}
+
+    async def fake_expand(url):
+        return real if platforms.is_short_link(url) else url
+
+    async def spy(url):
+        seen["url"] = url
+        return None
+
+    with patch.object(platforms, "expand", fake_expand), patch.dict(
+        platforms._RESOLVERS, {"spotify": spy}
+    ):
+        asyncio.run(platforms.resolve("https://spotify.link/aBcD"))
+
+    assert seen.get("url") == real
+
+
+def test_an_unreachable_shortener_degrades_quietly():
+    """No network here, which is exactly the failure being tested."""
+    import asyncio
+
+    from bot.services import platforms
+
+    url = "https://spotify.link/aBcD"
+    assert asyncio.run(platforms.expand(url)) == url, "unchanged, and no exception"
+    # A non-shortener must not cost a request at all.
+    plain = "https://open.spotify.com/track/x"
+    assert asyncio.run(platforms.expand(plain)) == plain
+
+
+def test_play_expands_a_short_link_before_deciding_anything():
+    """
+    on.soundcloud.com expands to a SoundCloud URL yt-dlp handles natively, so
+    expansion has to happen before the platform importer claims the link and
+    before the extractor sees it.
+    """
+    import inspect
+
+    from bot.handlers import play
+
+    source = inspect.getsource(play._play_body)
+    assert "is_short_link" in source and "expand" in source
+    assert source.index("expand") < source.index("_import_platform_link"), (
+        "expand first, or the importer decides on a URL nobody can read"
+    )
