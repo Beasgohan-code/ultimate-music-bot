@@ -18,6 +18,10 @@ env
 env.*
 .env
 .env.*
+# Any *.env file: session_generator.py --env can write a credential to an
+# arbitrary path, and a tracked one would be committed on the next add -A.
+*.env
+!.env.example
 !.env.example
 *.session*
 data/

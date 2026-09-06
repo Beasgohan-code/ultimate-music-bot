@@ -180,9 +180,22 @@ async def notify_owner(bot, *, backend: str = "") -> bool:
 
     Never raises: a boot report failing must not stop the bot from booting.
     """
-    if not config.owner_id:
-        logger.info("No OWNER_ID set — skipping the startup DM.")
-        return False
+    # OWNER_ID is the intended target, but render.yaml declares it sync:false,
+    # so a deploy that never filled it in leaves it empty and the DM silently
+    # never happens. Most such setups do have SUDO_USERS, and the first sudo
+    # is the same person in practice — so fall back rather than stay quiet.
+    target = config.owner_id
+    via_fallback = False
+    if not target:
+        sudo = [uid for uid in config.sudo_users if uid]
+        if sudo:
+            target, via_fallback = sudo[0], True
+        else:
+            logger.warning(
+                "No OWNER_ID or SUDO_USERS set — nobody to send the startup "
+                "report to. Set OWNER_ID to your numeric Telegram id."
+            )
+            return False
 
     try:
         me = await bot.get_me()
@@ -192,15 +205,14 @@ async def notify_owner(bot, *, backend: str = "") -> bool:
         from bot.services.delivery import send_safe
 
         outcome = await send_safe(
-            lambda: bot.send_message(
-                config.owner_id, card.to_html(), parse_mode="HTML"
-            ),
-            chat_id=config.owner_id,
+            lambda: bot.send_message(target, card.to_html(), parse_mode="HTML"),
+            chat_id=target,
         )
         if outcome.ok:
             logger.info(
-                "Startup report sent to owner %s (%d subsystem(s) degraded)",
-                config.owner_id,
+                "Startup report sent to %s%s (%d subsystem(s) degraded)",
+                target,
+                " (via SUDO_USERS — set OWNER_ID to silence this)" if via_fallback else "",
                 len(report.degraded),
             )
             return True
@@ -210,7 +222,7 @@ async def notify_owner(bot, *, backend: str = "") -> bool:
         logger.warning(
             "Could not DM the owner (%s): %s. "
             "Send /start to the bot from that account to enable startup reports.",
-            config.owner_id,
+            target,
             outcome.error,
         )
     except Exception as exc:

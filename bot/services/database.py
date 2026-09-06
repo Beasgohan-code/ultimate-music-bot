@@ -210,6 +210,23 @@ class Database:
                 logger.error("Mongo scan failed (%s): %s", collection, exc)
         return await self._json.all(collection)
 
+    # ── global settings ─────────────────────────────────────────────────
+    #: Values that belong to the deployment rather than to a chat or user —
+    #: the assistant session string being the one that matters. On a PaaS with
+    #: an ephemeral filesystem this is the only place a runtime-generated
+    #: credential can survive a redeploy.
+    async def get_setting(self, key: str, default: Any = None) -> Any:
+        doc = await self._get("settings", "global")
+        value = doc.get(key)
+        return default if value is None else value
+
+    async def set_setting(self, key: str, value: Any) -> Any:
+        await self._update("settings", "global", {key: value, "updated_at": time.time()})
+        return value
+
+    async def delete_setting(self, key: str) -> None:
+        await self._update("settings", "global", {key: None})
+
     # ── chat settings ───────────────────────────────────────────────────
     async def get_chat(self, chat_id: int) -> dict[str, Any]:
         return await self._get("chats", str(chat_id))

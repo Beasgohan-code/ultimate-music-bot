@@ -4303,3 +4303,150 @@ def test_autoplay_command_handles_every_argument():
     assert "Autoplay On" in rendered[0]
     assert "Autoplay Off" in rendered[1]
     assert "Unknown option" in rendered[3]
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Session generator
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def test_env_writer_preserves_the_rest_of_the_file():
+    import tempfile
+    from pathlib import Path
+
+    from session_generator import write_env_value
+
+    root = Path(tempfile.mkdtemp())
+
+    fresh = root / "new.env"
+    assert write_env_value(fresh, "SESSION_STRING", "AAA") == "created"
+    assert fresh.read_text().strip() == "SESSION_STRING=AAA"
+
+    existing = root / "existing.env"
+    existing.write_text("# comment\nAPI_ID=123\nBOT_TOKEN=xyz\n")
+    assert write_env_value(existing, "SESSION_STRING", "BBB") == "appended"
+    body = existing.read_text()
+    assert "# comment" in body and "API_ID=123" in body and "SESSION_STRING=BBB" in body
+
+    replace = root / "replace.env"
+    replace.write_text("API_ID=1\nSESSION_STRING=OLD\nBOT_TOKEN=t\n")
+    assert write_env_value(replace, "SESSION_STRING", "CCC") == "updated"
+    assert "OLD" not in replace.read_text()
+    assert "BOT_TOKEN=t" in replace.read_text()
+    assert (root / "replace.env.bak").read_text().count("OLD") == 1
+
+
+def test_env_writer_keeps_an_export_prefix():
+    """Some people source their .env; dropping `export ` breaks that quietly."""
+    import tempfile
+    from pathlib import Path
+
+    from session_generator import write_env_value
+
+    path = Path(tempfile.mkdtemp()) / "x.env"
+    path.write_text("export SESSION_STRING=old\n")
+    write_env_value(path, "SESSION_STRING", "NEW")
+    assert path.read_text().strip() == "export SESSION_STRING=NEW"
+
+
+def test_env_file_is_written_owner_only():
+    import stat
+    import tempfile
+    from pathlib import Path
+
+    from session_generator import write_env_value
+
+    path = Path(tempfile.mkdtemp()) / "perm.env"
+    write_env_value(path, "SESSION_STRING", "SECRET")
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+def test_every_env_file_is_gitignored():
+    """--env accepts any path; a tracked target would commit a credential."""
+    import subprocess
+
+    for name in (".env", ".env.bak", "prod.env", "staging.env"):
+        result = subprocess.run(["git", "check-ignore", "-q", name], capture_output=True)
+        assert result.returncode == 0, f"{name} is not gitignored"
+
+
+def test_phone_numbers_are_validated():
+    from bot.services.sessiongen import _normalise_phone
+
+    assert _normalise_phone("+91 98765 43210") == "+919876543210"
+    assert _normalise_phone("919876543210") == "+919876543210"
+    assert _normalise_phone("abc") == ""
+    assert _normalise_phone("+12") == ""
+    assert _normalise_phone("+" + "9" * 20) == ""
+
+
+def test_session_generator_is_owner_and_dm_only():
+    """A login code is full account access — it must not be usable in a group."""
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock
+
+    from bot.config import config
+    from bot.handlers import sessiongen as handler
+
+    replies: list[str] = []
+
+    async def capture(message, card, **kwargs):
+        replies.append(card.to_html())
+        return MagicMock()
+
+    original = handler.send_card
+    handler.send_card = capture
+    try:
+
+        def fake(user_id: int, chat_type: str):
+            message = MagicMock()
+            message.text = "/genstring"
+            message.from_user.id = user_id
+            message.chat.type = chat_type
+            return message
+
+        class FakeState:
+            async def clear(self):
+                pass
+
+            async def set_state(self, value):
+                pass
+
+        owner = (config.owners or [0])[0]
+
+        # A stranger gets no reply at all: they should not learn it exists.
+        replies.clear()
+        asyncio.run(handler.cmd_genstring(fake(999_999_999, "private"), FakeState()))
+        assert replies == []
+
+        # The owner in a group is refused, and told why.
+        if owner:
+            replies.clear()
+            asyncio.run(handler.cmd_genstring(fake(owner, "supergroup"), FakeState()))
+            assert replies and "Not here" in replies[0]
+    finally:
+        handler.send_card = original
+
+
+def test_a_saved_session_is_actually_used_at_startup():
+    """Saving a session the bot then ignores is worse than not saving it."""
+    import inspect
+
+    import assistant.client as client
+
+    source = inspect.getsource(client.resolve_session)
+    assert "config.session_string" in source, "the env copy must win"
+    assert "stored" in source, "a /genstring session must be picked up"
+
+    main_source = inspect.getsource(__import__("main"))
+    assert "resolve_session()" in main_source, "main.py must call it"
+
+
+def test_startup_report_falls_back_to_sudo_users():
+    """render.yaml declares OWNER_ID sync:false, so it is often left empty."""
+    import inspect
+
+    from bot.services import startup
+
+    source = inspect.getsource(startup.notify_owner)
+    assert "sudo_users" in source, "an unset OWNER_ID should not mean silence"

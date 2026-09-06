@@ -210,6 +210,32 @@ to your password and they do not need your 2FA. If you have posted them
 anywhere, sign out of that Google account on all devices immediately, which
 invalidates them.
 
+## Assistant session
+
+The assistant is an ordinary user account that joins voice chats to stream
+audio. It needs a Pyrogram session string, and there are two ways to get one.
+
+**From a shell** — reads `API_ID`/`API_HASH` from `.env`, logs in, and writes
+`SESSION_STRING` back to `.env` automatically (with a `.bak` of the previous
+file, mode `0600`):
+
+```bash
+python session_generator.py            # save to .env
+python session_generator.py --print    # also show it, to paste into Render
+python session_generator.py --check    # validate the saved one
+```
+
+**From Telegram** — send `/genstring` to the bot in a **private chat**. It
+asks for the phone number, then the login code, then the 2FA password if the
+account has one, and saves the result. The command is owner-only, refuses to
+run in groups, and deletes the messages containing the code and password
+straight after reading them. The session string itself is never echoed back.
+
+Sessions are saved to the database *and* to `.env` when the filesystem is
+writable. On Render the disk is wiped on every redeploy, so the database copy
+is the one that survives — but paste the value into the `SESSION_STRING`
+environment variable as well, or a database reset will lose it too.
+
 ## Autoplay
 
 When the queue runs dry the bot can keep going instead of leaving. `/autoplay`

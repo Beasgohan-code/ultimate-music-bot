@@ -35,7 +35,7 @@ def _patched_get_event_loop():
 
 asyncio.get_event_loop = _patched_get_event_loop
 
-from assistant.client import create_assistant  # noqa: E402
+from assistant.client import create_assistant, resolve_session  # noqa: E402
 from bot.config import DATA_DIR, config  # noqa: E402
 from bot.handlers import (  # noqa: E402
     admin,
@@ -43,6 +43,7 @@ from bot.handlers import (  # noqa: E402
     assistant_admin,
     callbacks,
     controls,
+    sessiongen,
     dashboard,
     extras,
     grouptools,
@@ -505,7 +506,9 @@ async def main() -> None:
     backend = await database.connect()
     logger.info("Languages loaded: %s", ", ".join(translator.languages))
 
-    assistant = create_assistant()
+    # After database.connect(): a session made with /genstring lives in
+    # the database, and the env copy may be absent on a fresh deploy.
+    assistant = create_assistant(await resolve_session())
     calls = stream_manager.setup(assistant)
 
     bot = Bot(
@@ -525,6 +528,9 @@ async def main() -> None:
         moderation_handlers.router,
         admin.router,
         assistant_admin.router,
+        # Before the rest: it drives an FSM in the owner's DMs, and a
+        # catch-all elsewhere would swallow the code and password replies.
+        sessiongen.router,
         controls.router,
         play.router,
         advanced.router,
