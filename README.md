@@ -201,6 +201,36 @@ to your password and they do not need your 2FA. If you have posted them
 anywhere, sign out of that Google account on all devices immediately, which
 invalidates them.
 
+## Operating the bot
+
+**Unhandled errors.** Most handlers deliberately have no `try/except`; a single
+global handler catches whatever they throw. The user gets a short apology with
+a reference id, and the full traceback goes to `LOG_GROUP_ID` — once per
+distinct bug, then rate-limited, so one broken handler in a busy group cannot
+flood the channel.
+
+The id is a hash of the traceback's *shape*, not its text, so the same bug
+keeps the same id across restarts and chats. Quote it to find the traceback.
+
+| Command | Who | Purpose |
+| --- | --- | --- |
+| `/errors` | sudo | Recent distinct errors, most frequent first |
+| `/clearerrors` | sudo | Reset the tracker |
+
+**Health endpoint.** `GET /health` returns `200 {"status":"ok"}` normally and
+`503 {"status":"degraded"}` when something is actually wrong — extraction
+blocked by the media host, or cookies present but unusable. Point an uptime
+monitor at it; a check that can only ever say "ok" is not worth having.
+
+```json
+{
+  "status": "degraded",
+  "extraction_blocked": true,
+  "cookies": "PRESENT BUT UNUSABLE - every cookie has expired",
+  "problems": ["extraction blocked by the media host"]
+}
+```
+
 ## Keeping chats quiet
 
 A music bot is chatty: every `/play` leaves a command, a status message and a

@@ -2257,3 +2257,177 @@ def test_progress_row_does_not_displace_the_controls():
     glyphs = [b.text for b in kb.inline_keyboard[1]]
     assert glyphs == ["⏮", "⏸", "⏭", "⏹"]
     assert len(kb.inline_keyboard) == 4
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Unhandled errors
+#
+# 148 of 195 registered handlers have no try/except, and nothing caught what
+# they threw: the user saw silence and only the server log had the traceback.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def _raise(kind=ValueError, msg="boom"):
+    try:
+        raise kind(msg)
+    except Exception as exc:  # noqa: BLE001 - we want the traceback attached
+        return exc
+
+
+def test_same_bug_gets_the_same_id():
+    from bot.services import errors
+
+    errors.clear()
+
+    def failing():
+        return _raise(ValueError, "chat 42 song 'A'")
+
+    a = errors.record(failing(), "/play a")
+    b = errors.record(failing(), "/play b")
+
+    assert a.error_id == b.error_id, "same code path must group"
+    assert a.count == 2
+    assert len(errors.snapshot()) == 1
+
+
+def test_the_id_ignores_the_message_text():
+    """Messages embed chat ids and titles; grouping on them splits one bug."""
+    from bot.services import errors
+
+    errors.clear()
+
+    def failing(msg):
+        return _raise(ValueError, msg)
+
+    first = errors.record(failing("chat 1 song 'X'"), "")
+    second = errors.record(failing("chat 999 song 'Totally Different'"), "")
+    assert first.error_id == second.error_id
+
+
+def test_different_bugs_stay_separate():
+    from bot.services import errors
+
+    errors.clear()
+    errors.record(_raise(ValueError, "a"), "")
+    errors.record(_raise(KeyError, "b"), "")
+    assert len(errors.snapshot()) == 2
+
+
+def test_user_message_never_leaks_internals():
+    from bot.services import errors
+
+    errors.clear()
+    rec = errors.record(_raise(ValueError, "/home/user/secret/path.py exploded"), "")
+    text = errors.user_message(rec)
+
+    assert rec.error_id in text, "the reference id must be quotable"
+    for leak in ("Traceback", "ValueError", "/home/user", ".py"):
+        assert leak not in text, f"user-facing text leaked {leak!r}"
+
+
+def test_repeats_are_rate_limited():
+    """One broken handler in a busy group must not flood the log channel."""
+    import time
+
+    from bot.services import errors
+
+    errors.clear()
+    rec = errors.record(_raise(), "")
+    assert errors.should_report(rec), "first sighting reports immediately"
+
+    rec.last_reported = time.time()
+    assert not errors.should_report(rec), "an immediate repeat must be suppressed"
+
+    rec.last_reported = time.time() - errors.REPORT_COOLDOWN - 1
+    assert errors.should_report(rec), "should report again after the cooldown"
+
+
+def test_registry_cannot_grow_without_bound():
+    from bot.services import errors
+
+    errors.clear()
+    for n in range(errors.MAX_TRACKED + 40):
+        def uniquely_failing(i=n):
+            return _raise(ValueError, f"bug {i}")
+
+        # Distinct code objects would be ideal; force distinct ids instead.
+        exc = uniquely_failing()
+        exc.__traceback__.tb_lineno  # touch, keep the frame
+        errors.record(exc, f"ctx{n}")
+    assert len(errors.snapshot()) <= errors.MAX_TRACKED
+
+
+def test_crash_report_includes_the_traceback():
+    from bot.services import errors
+
+    errors.clear()
+    exc = _raise(RuntimeError, "kaboom")
+    rec = errors.record(exc, "/play test")
+    report = errors.format_report(rec, exc)
+
+    assert rec.error_id in report
+    assert "RuntimeError" in report
+    assert "<pre>" in report, "traceback should be preformatted"
+    assert len(report) < 4096, "must fit in a Telegram message"
+
+
+def test_error_handler_is_registered_and_swallows():
+    import inspect
+
+    import main
+
+    source = inspect.getsource(main._register_error_handler)
+    assert "@dp.errors()" in source
+    assert "return True" in source, "must mark handled so polling continues"
+    assert "user_message" in source, "the user must be told something"
+
+
+def test_health_endpoint_reports_degraded_when_blocked():
+    """A check that always says ok cannot be alerted on."""
+    import asyncio
+    import json
+    from unittest.mock import MagicMock
+
+    import bot.web as web_module
+    from bot.services import music
+
+    previous = music._last_error
+    try:
+        music._last_error = "ERROR: [youtube] x: Failed to extract any player response"
+        resp = asyncio.run(web_module._health(MagicMock()))
+        body = json.loads(resp.body.decode())
+
+        assert resp.status == 503
+        assert body["status"] == "degraded"
+        assert body["extraction_blocked"] is True
+        assert body["problems"]
+    finally:
+        music._last_error = previous
+
+
+def test_health_endpoint_is_ok_when_nothing_is_wrong():
+    import asyncio
+    import json
+    from unittest.mock import MagicMock
+
+    import bot.web as web_module
+    from bot.services import music
+
+    previous = music._last_error
+    try:
+        music._last_error = ""
+        resp = asyncio.run(web_module._health(MagicMock()))
+        body = json.loads(resp.body.decode())
+        assert resp.status == 200
+        assert body["status"] == "ok"
+        assert body["problems"] == []
+    finally:
+        music._last_error = previous
+
+
+def test_pillow_is_declared():
+    """thumbnails.py degrades silently without it, so its absence hid for ages."""
+    import pathlib
+
+    text = pathlib.Path("requirements.txt").read_text().lower()
+    assert "pillow" in text, "image cards need Pillow at runtime"

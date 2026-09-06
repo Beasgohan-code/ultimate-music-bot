@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import os
 import shutil
 import sys
@@ -14,7 +15,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import BotCommand, BotCommandScopeAllChatAdministrators, BotCommandScopeAllPrivateChats
+from aiogram.types import BotCommand, ErrorEvent, BotCommandScopeAllChatAdministrators, BotCommandScopeAllPrivateChats
 
 # Pyrogram still calls the deprecated asyncio.get_event_loop() at import time on
 # Python 3.12+, which raises when no loop is running. Patch before importing it.
@@ -55,6 +56,7 @@ from bot.middlewares.enforcement import EnforcementMiddleware  # noqa: E402
 from bot.middlewares.gatekeeper import GatekeeperMiddleware  # noqa: E402
 from bot.services.autoleave import auto_leave
 from bot.services import cleanup
+from bot.services import errors
 from bot.services.scheduler import scheduler  # noqa: E402
 from bot.services.database import database  # noqa: E402
 from bot.services.i18n import translator  # noqa: E402
@@ -428,6 +430,61 @@ async def _janitor() -> None:
             logger.warning("Janitor pass failed: %s", exc)
 
 
+def _register_error_handler(dp: Dispatcher, bot: Bot) -> None:
+    """Catch anything a handler throws.
+
+    Most of the bot's handlers have no try/except of their own — which is
+    fine, and arguably cleaner, *provided* something catches what they throw.
+    Until now nothing did, so a bug meant a server-side traceback and total
+    silence for the user.
+    """
+
+    @dp.errors()
+    async def on_error(event: ErrorEvent) -> bool:
+        exc = event.exception
+        update = event.update
+
+        chat_id: int | None = None
+        context = ""
+        message = None
+        if getattr(update, "message", None):
+            message = update.message
+            chat_id = message.chat.id
+            context = (message.text or "")[:32]
+        elif getattr(update, "callback_query", None):
+            query = update.callback_query
+            message = query.message
+            chat_id = message.chat.id if message else None
+            context = f"callback {query.data}"[:32]
+
+        rec = errors.record(exc, context)
+        logger.exception("Unhandled error %s in %s", rec.error_id, context or "update")
+
+        # Tell the user something, but never a traceback.
+        if chat_id is not None:
+            try:
+                await bot.send_message(
+                    chat_id, errors.user_message(rec), parse_mode="HTML"
+                )
+            except Exception as send_exc:
+                logger.debug("Could not deliver the error notice: %s", send_exc)
+
+        # Report to the log channel, deduplicated.
+        if config.log_group_id and errors.should_report(rec):
+            rec.last_reported = time.time()
+            try:
+                await bot.send_message(
+                    config.log_group_id,
+                    errors.format_report(rec, exc),
+                    parse_mode="HTML",
+                )
+            except Exception as log_exc:
+                logger.debug("Could not post the crash report: %s", log_exc)
+
+        # True == handled, so polling continues instead of unwinding.
+        return True
+
+
 async def main() -> None:
     setup_logging()
     _banner()
@@ -459,6 +516,7 @@ async def main() -> None:
     # Order matters: gatekeeper (access) → enforcement (locks/flood/filters).
     dp.update.middleware(GatekeeperMiddleware())
     dp.message.middleware(EnforcementMiddleware())
+    _register_error_handler(dp, bot)
 
     for router in (
         start.router,

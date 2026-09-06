@@ -40,6 +40,11 @@ yt-dlp>=2024.12.0
 mutagen>=1.47.0
 beautifulsoup4>=4.12.0
 
+# Now Playing thumbnail rendering. thumbnails.py degrades to a text card when
+# Pillow is missing, which meant its absence here went unnoticed: image cards
+# were simply never generated in production.
+Pillow>=10.4.0
+
 # Utilities
 requests>=2.32.0
 typing-extensions>=4.12.0

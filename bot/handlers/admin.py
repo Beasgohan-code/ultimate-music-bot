@@ -13,12 +13,14 @@ from aiogram.filters import Command
 from aiogram.types import Message
 
 from bot.config import config
+from bot.services import errors
 from bot.services.database import database
 from bot.services.queue import queue_manager
 from bot.services.stats import bot_stats
 from bot.services.stream import stream_manager
 from bot.utils.guards import extract_target, is_sudo, mention_id
-from bot.utils.rich import RichCard, b, c, plain, send_card, send_html
+from bot.utils.cards import success_card
+from bot.utils.rich import RichCard, b, c, i, plain, send_card, send_html
 
 logger = logging.getLogger(__name__)
 router = Router(name="admin")
@@ -416,3 +418,50 @@ async def cmd_sudo_info(message: Message) -> None:
         .footer(f"Storage backend: {database.backend}")
     )
     await send_card(message, card)
+
+
+@router.message(Command("errors", "bugs"))
+async def cmd_errors(message: Message) -> None:
+    """Recent unhandled exceptions, most frequent first.
+
+    Reading a PaaS log stream to find out whether the bot is healthy is
+    painful; this surfaces the same information where the operator already is.
+    """
+    if not is_sudo(message.from_user.id if message.from_user else None):
+        return
+
+    entries = errors.snapshot()
+    if not entries:
+        await send_card(
+            message,
+            success_card("No unhandled errors recorded.", "The bot is behaving."),
+        )
+        return
+
+    card = RichCard().heading([_icon("🐞"), b("Recent Errors")], size=1)
+    for item in entries[:10]:
+        age = item["age"]
+        when = f"{age}s ago" if age < 90 else f"{age // 60}m ago"
+        card.para(
+            [
+                c(item["id"]),
+                plain("  "),
+                b(item["kind"]),
+                plain(f"  ×{item['count']}"),
+            ]
+        )
+        card.para([plain("     "), i(f"{item['message'][:90]}  •  {when}")])
+        if item["contexts"]:
+            card.para([plain("     "), i("from: " + ", ".join(item["contexts"][:3]))])
+
+    total = sum(e["count"] for e in entries)
+    card.footer(f"{len(entries)} distinct  •  {total} total  •  /clearerrors to reset")
+    await send_card(message, card)
+
+
+@router.message(Command("clearerrors"))
+async def cmd_clear_errors(message: Message) -> None:
+    if not is_sudo(message.from_user.id if message.from_user else None):
+        return
+    dropped = errors.clear()
+    await send_card(message, success_card(f"Cleared {dropped} tracked error(s)."))

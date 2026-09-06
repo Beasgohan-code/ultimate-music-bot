@@ -100,15 +100,43 @@ async def _index(request: web.Request) -> web.Response:
 
 
 async def _health(request: web.Request) -> web.Response:
-    return web.json_response(
-        {
-            "status": "ok",
-            "bot": config.bot_name,
-            "active_voice_chats": len(stream_manager.active_chats),
-            "storage": database.backend,
-            "uptime": (await bot_stats.summary()).get("uptime"),
-        }
-    )
+    """Report real health, not just "the process is running".
+
+    A check that always says ok cannot fail, which makes it useless for
+    alerting. Extraction being blocked, or cookies having quietly expired,
+    are exactly the conditions worth waking up for — so they degrade the
+    status rather than hiding behind a 200.
+    """
+    from bot.services import errors
+    from bot.services.music import cookie_status, last_error, looks_blocked
+
+    cookies = cookie_status()
+    blocked = looks_blocked(last_error())
+    recent_errors = errors.snapshot()
+
+    problems: list[str] = []
+    if blocked:
+        problems.append("extraction blocked by the media host")
+    if cookies.startswith("PRESENT BUT UNUSABLE"):
+        problems.append(f"cookies unusable: {cookies.split('— ', 1)[-1]}")
+
+    # "degraded" keeps the process alive for the platform's own restart logic
+    # while still being visibly not-ok to a monitor.
+    status = "degraded" if problems else "ok"
+
+    payload = {
+        "status": status,
+        "bot": config.bot_name,
+        "active_voice_chats": len(stream_manager.active_chats),
+        "storage": database.backend,
+        "uptime": (await bot_stats.summary()).get("uptime"),
+        "cookies": cookies,
+        "extraction_blocked": blocked,
+        "distinct_errors": len(recent_errors),
+        "problems": problems,
+    }
+    # 503 lets an uptime monitor alert without parsing the body.
+    return web.json_response(payload, status=200 if status == "ok" else 503)
 
 
 async def _stats_api(request: web.Request) -> web.Response:
