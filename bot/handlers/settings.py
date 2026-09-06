@@ -503,6 +503,7 @@ async def cb_settings_music(query: CallbackQuery, bot: Bot) -> None:
     play_admins = bool(doc.get("play_admins_only", config.admins_only))
     ctrl_admins = bool(doc.get("control_admins_only", True))
     announce = bool(doc.get("announce_tracks", True))
+    autoplay_on = str(doc.get("autoplay", "0")).lower() in ("1", "true", "yes", "on")
     card = (
         RichCard()
         .heading([_icon("🎵"), b("Music Settings")], size=1)
@@ -515,6 +516,7 @@ async def cb_settings_music(query: CallbackQuery, bot: Bot) -> None:
                 ["Who can control", c("admins" if ctrl_admins else "everyone")],
                 ["Duration limit", c(f"{config.duration_limit_min} min")],
                 ["Announce tracks", c("on" if announce else "off")],
+                ["Autoplay", c("on" if autoplay_on else "off")],
             ],
         )
         .footer("Authorised users (/auth) bypass the admin restriction.")
@@ -527,6 +529,7 @@ async def cb_settings_music(query: CallbackQuery, bot: Bot) -> None:
                 ("Play: admins only", "gsm:toggle:play_admins_only", play_admins),
                 ("Controls: admins only", "gsm:toggle:control_admins_only", ctrl_admins),
                 ("Announce each track", "gsm:toggle:announce_tracks", announce),
+                ("Autoplay when queue ends", "gsm:toggle:autoplay", autoplay_on),
             ]
         ),
     )
@@ -537,8 +540,15 @@ async def cb_music_toggle(query: CallbackQuery, bot: Bot) -> None:
     if not await _guard_cb(query, bot):
         return
     key = query.data.split(":")[-1]
-    # play_admins_only follows the global default; every other toggle is on.
-    default = config.admins_only if key == "play_admins_only" else True
+    # play_admins_only follows the global default. Autoplay defaults *off* —
+    # a bot that keeps playing on its own in a group that did not ask for it
+    # is a nuisance. Everything else defaults on.
+    if key == "play_admins_only":
+        default = config.admins_only
+    elif key == "autoplay":
+        default = False
+    else:
+        default = True
     current = bool(await database.get_chat_value(query.message.chat.id, key, default))
     await database.set_chat_value(query.message.chat.id, key, not current)
     await query.answer("Updated")

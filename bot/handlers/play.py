@@ -19,6 +19,7 @@ from bot.services.autoleave import auto_leave
 from bot.services.music import (
     BLOCKED_HINT,
     get_stream_url,
+    get_suggestions,
     is_live_url,
     is_url,
     last_error as music_last_error,
@@ -40,6 +41,7 @@ from bot.utils.cards import (
     success_card,
     voteskip_card,
 )
+from bot.services.autoplay import autoplay
 from bot.services.cleanup import clean_command, schedule_cleanup
 from bot.utils.play_helpers import can_play, play_track
 from bot.utils.rich import RichCard, b, c, i, plain, send_card, send_html
@@ -724,8 +726,19 @@ async def handle_media_file(message: Message, bot: Bot) -> None:
 
     chat_id = message.chat.id
     if stream_manager.is_playing(chat_id):
-        pos = await queue_manager.add(chat_id, track)
-        await send_card(message, queued_card(track, pos, pos), edit=status)
+        pos = await queue_manager.try_add(chat_id, track)
+        if pos is None:
+            await send_card(
+                message,
+                error_card(queue_manager.full_message, "Use /clear to make room."),
+                edit=status,
+            )
+            return
+        await send_card(
+            message,
+            queued_card(track, pos, await queue_manager.size(chat_id)),
+            edit=status,
+        )
     else:
         await play_track(message, track, force=True, edit_msg=status)
 
@@ -803,6 +816,10 @@ def register_stream_notifications(bot: Bot) -> None:
             logger.debug("Could not report skipped tracks in %s: %s", chat_id, exc)
 
     async def announce_empty(chat_id: int) -> None:
+        # Autoplay gets first refusal: if it can find a related track the
+        # queue is not really empty, and leaving would be wrong.
+        if await _try_autoplay(chat_id):
+            return
         if not await database.get_chat_value(chat_id, "announce_tracks", True):
             return
         try:
@@ -815,6 +832,48 @@ def register_stream_notifications(bot: Bot) -> None:
             )
         except Exception as exc:
             logger.debug("Could not announce queue end in %s: %s", chat_id, exc)
+
+    async def _try_autoplay(chat_id: int) -> bool:
+        """Extend the session with a related track. True if playback continues."""
+        if not await autoplay.is_enabled(chat_id):
+            return False
+        if autoplay.exhausted(chat_id):
+            logger.info("Autoplay is exhausted for %s — letting the queue end", chat_id)
+            return False
+
+        seed = await queue_manager.get_current(chat_id)
+        track = await autoplay.pick(chat_id, seed, fetch=get_suggestions)
+        if not track:
+            return False
+
+        # Resolve a playable stream: suggestions carry metadata, not a URL
+        # that PyTgCalls can feed to ffmpeg.
+        playable = await get_stream_url(track.get("url") or track.get("title", ""))
+        if not playable:
+            autoplay.note_failure(chat_id)
+            return False
+        playable["requester"] = "Autoplay"
+        playable["requester_id"] = 0
+        playable["_autoplay"] = True
+
+        try:
+            await stream_manager.play(chat_id, playable)
+        except Exception as exc:
+            logger.warning("Autoplay could not start %r in %s: %s", track.get("title"), chat_id, exc)
+            autoplay.note_failure(chat_id)
+            return False
+
+        if await database.get_chat_value(chat_id, "announce_tracks", True):
+            try:
+                card = now_playing_card(playable, queue_len=0)
+                card.footer("▶️ Autoplay — /autoplay off to stop")
+                await bot.send_message(
+                    chat_id, card.to_html(), parse_mode="HTML",
+                    reply_markup=player_panel_kb(True),
+                )
+            except Exception as exc:
+                logger.debug("Could not announce autoplay in %s: %s", chat_id, exc)
+        return True
 
     stream_manager.on_track_end(announce_next)
     stream_manager.on_autoskip(announce_skipped)

@@ -12,7 +12,7 @@ from bot.services.favorites import favorites_store
 from bot.services.music import get_stream_url
 from bot.services.queue import queue_manager
 from bot.services.stream import stream_manager
-from bot.utils.cards import action_card, error_card, now_playing_card, queue_card
+from bot.utils.cards import action_card, error_card, now_playing_card, queue_card, queued_card
 from bot.utils.rich import send_card
 from bot.utils.helpers import get_cached_track
 
@@ -338,10 +338,16 @@ async def cb_play_track(query: CallbackQuery) -> None:
     track["requester"] = query.from_user.full_name if query.from_user else "Unknown"
 
     if stream_manager.is_playing(chat_id):
-        pos = await queue_manager.add(chat_id, track)
-        await query.message.edit_text(
-            f"✅ Queued at <b>#{pos}</b>: {track['title']}",
-            parse_mode="HTML",
+        pos = await queue_manager.try_add(chat_id, track)
+        if pos is None:
+            await _edit_card(
+                query,
+                error_card(queue_manager.full_message, "Use /clear to make room."),
+            )
+            return
+        await _edit_card(
+            query,
+            queued_card(track, pos, await queue_manager.size(chat_id)),
             reply_markup=player_panel_kb(True),
         )
     else:
@@ -380,7 +386,9 @@ async def cb_suggest_play(query: CallbackQuery) -> None:
     track["requester"] = query.from_user.full_name if query.from_user else "Unknown"
 
     if stream_manager.is_playing(chat_id):
-        await queue_manager.add(chat_id, track)
+        if await queue_manager.try_add(chat_id, track) is None:
+            await query.answer(queue_manager.full_message, show_alert=True)
+            return
         await query.answer(f"✅ Queued: {track['title'][:30]}")
     else:
         await stream_manager.play(chat_id, track)

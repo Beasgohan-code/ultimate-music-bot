@@ -4040,3 +4040,266 @@ def test_terminal_replies_go_through_a_card(monkeypatch):
     assert len(sent) == 4, "a handler replied without going through send_card"
     for html in sent:
         assert "<b>" in html, "card rendered with no formatting at all"
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Queue correctness
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def test_a_cleared_track_does_not_come_back_under_loop_all():
+    """/clear emptied the list but left _current, so loop-all re-queued it."""
+    import asyncio
+
+    from bot.services.queue import LoopMode, queue_manager
+
+    async def scenario():
+        chat_id = -775001
+        await queue_manager.reset(chat_id)
+        await queue_manager.add(chat_id, {"title": "OLD", "duration": 10})
+        await queue_manager.next_track(chat_id)
+        await queue_manager.set_loop(chat_id, LoopMode.ALL)
+        await queue_manager.clear(chat_id)
+        for title in ("new1", "new2"):
+            await queue_manager.add(chat_id, {"title": title, "duration": 10})
+        return [
+            (await queue_manager.next_track(chat_id) or {}).get("title")
+            for _ in range(6)
+        ]
+
+    played = asyncio.run(scenario())
+    assert "OLD" not in played, f"cleared track resurrected: {played}"
+
+
+def test_loop_all_still_cycles_normally():
+    """The clear fix must not break the feature it guards."""
+    import asyncio
+
+    from bot.services.queue import LoopMode, queue_manager
+
+    async def scenario():
+        chat_id = -775002
+        await queue_manager.reset(chat_id)
+        await queue_manager.set_loop(chat_id, LoopMode.ALL)
+        for title in ("a", "b", "c"):
+            await queue_manager.add(chat_id, {"title": title, "duration": 10})
+        return [
+            (await queue_manager.next_track(chat_id) or {}).get("title")
+            for _ in range(7)
+        ]
+
+    assert asyncio.run(scenario()) == ["a", "b", "c", "a", "b", "c", "a"]
+
+
+def test_reset_drops_every_per_chat_structure():
+    """A missed dict is a slow leak in a process that runs for weeks."""
+    import asyncio
+
+    from bot.services.queue import LoopMode, queue_manager
+
+    async def scenario():
+        chat_id = -775003
+        await queue_manager.add(chat_id, {"title": "x", "duration": 1})
+        await queue_manager.set_loop(chat_id, LoopMode.ALL)
+        await queue_manager.next_track(chat_id)
+        await queue_manager.set_volume(chat_id, 150)
+        await queue_manager.reset(chat_id)
+        return {
+            name: chat_id in getattr(queue_manager, name)
+            for name in (
+                "_queues",
+                "_current",
+                "_loop",
+                "_loop_count",
+                "_volume",
+                "_requeue_current",
+            )
+        }
+
+    leaked = [name for name, present in asyncio.run(scenario()).items() if present]
+    assert not leaked, f"reset() leaked: {leaked}"
+
+
+def test_a_full_queue_is_reported_not_raised():
+    """add() raises; the non-raising twin is what handlers should call."""
+    import asyncio
+
+    from bot.services.queue import QueueManager
+
+    async def scenario():
+        manager = QueueManager(max_size=2)
+        chat_id = -775004
+        await manager.add(chat_id, {"title": "a"})
+        await manager.add(chat_id, {"title": "b"})
+        overflow = await manager.try_add(chat_id, {"title": "c"})
+        front = await manager.try_add_front(chat_id, {"title": "d"})
+        return overflow, front, await manager.size(chat_id)
+
+    overflow, front, size = asyncio.run(scenario())
+    assert overflow is None and front is None
+    assert size == 2
+
+
+def test_add_many_fills_the_remaining_space():
+    """The old loop stopped at the first rejection instead of partly filling."""
+    import asyncio
+
+    from bot.services.queue import QueueManager
+
+    async def scenario():
+        manager = QueueManager(max_size=5)
+        chat_id = -775005
+        await manager.add(chat_id, {"title": "seed"})
+        added = await manager.add_many(
+            chat_id, [{"title": f"t{n}"} for n in range(10)]
+        )
+        return added, await manager.size(chat_id)
+
+    added, size = asyncio.run(scenario())
+    assert added == 4, f"expected to fill the 4 free slots, added {added}"
+    assert size == 5
+
+
+def test_no_handler_calls_the_raising_add_unguarded():
+    """An escaped ValueError shows the user 'Something went wrong'."""
+    import ast
+    import pathlib
+
+    offenders = []
+    for path in list(pathlib.Path("bot/handlers").rglob("*.py")) + list(
+        pathlib.Path("bot/utils").rglob("*.py")
+    ):
+        tree = ast.parse(path.read_text())
+        guarded: list[tuple[int, int]] = [
+            (node.lineno, node.end_lineno or node.lineno)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Try)
+        ]
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+                continue
+            if node.func.attr not in ("add", "add_front"):
+                continue
+            target = node.func.value
+            if not (isinstance(target, ast.Name) and target.id == "queue_manager"):
+                continue
+            if not any(start <= node.lineno <= end for start, end in guarded):
+                offenders.append(f"{path}:{node.lineno}")
+    assert not offenders, (
+        "queue_manager.add() can raise; use try_add() or wrap it:\n"
+        + "\n".join(offenders)
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Autoplay
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def test_autoplay_never_repeats_within_its_memory():
+    import asyncio
+
+    from bot.services.autoplay import autoplay
+
+    async def fetch(query, limit):
+        return [{"id": f"v{n}", "title": f"song {n}"} for n in range(limit)]
+
+    async def scenario():
+        chat_id = -776001
+        autoplay.forget(chat_id)
+        seed = {"id": "seed", "title": "Faded", "artist": "Alan Walker"}
+        return [
+            (await autoplay.pick(chat_id, seed, fetch=fetch) or {}).get("title")
+            for _ in range(5)
+        ]
+
+    picks = asyncio.run(scenario())
+    assert None not in picks
+    assert len(set(picks)) == len(picks), f"autoplay looped: {picks}"
+
+
+def test_autoplay_gives_up_instead_of_hammering_a_dead_extractor():
+    import asyncio
+
+    from bot.services.autoplay import MAX_FAILURES, autoplay
+
+    async def broken(query, limit):
+        raise RuntimeError("extractor down")
+
+    async def scenario():
+        chat_id = -776002
+        autoplay.forget(chat_id)
+        seed = {"id": "s", "title": "x"}
+        for _ in range(MAX_FAILURES):
+            await autoplay.pick(chat_id, seed, fetch=broken)
+        return autoplay.exhausted(chat_id)
+
+    assert asyncio.run(scenario()), "autoplay should disable itself after repeated failures"
+
+
+def test_autoplay_is_off_by_default():
+    """Opt-in: a bot playing unprompted in someone's group is a nuisance."""
+    import asyncio
+
+    from bot.services.autoplay import autoplay
+
+    assert not asyncio.run(autoplay.is_enabled(-776003))
+
+
+def test_autoplay_reads_both_the_command_and_the_settings_toggle():
+    """/autoplay writes "1"/"0"; the settings keyboard writes real bools."""
+    import asyncio
+
+    from bot.services.autoplay import autoplay
+    from bot.services.database import database
+
+    async def scenario():
+        chat_id = -776004
+        await autoplay.set_enabled(chat_id, True)
+        from_command = await autoplay.is_enabled(chat_id)
+        await database.set_chat_value(chat_id, "autoplay", False)
+        from_toggle_off = await autoplay.is_enabled(chat_id)
+        await database.set_chat_value(chat_id, "autoplay", True)
+        from_toggle_on = await autoplay.is_enabled(chat_id)
+        return from_command, from_toggle_off, from_toggle_on
+
+    assert asyncio.run(scenario()) == (True, False, True)
+
+
+def test_autoplay_command_handles_every_argument():
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock
+
+    from bot.handlers import controls
+
+    rendered: list[str] = []
+
+    async def capture(message, card, **kwargs):
+        rendered.append(card.to_html())
+        return MagicMock()
+
+    original_send, original_guard = controls.send_card, controls._can_control
+    controls.send_card = capture
+    controls._can_control = AsyncMock(return_value=True)
+    try:
+
+        def message(text: str):
+            item = MagicMock()
+            item.chat.id = -776005
+            item.text = text
+            item.from_user.full_name = "Rahul"
+            item.from_user.id = 7
+            return item
+
+        async def scenario():
+            for text in ("/autoplay on", "/autoplay off", "/autoplay", "/autoplay wat"):
+                await controls.cmd_autoplay(message(text), MagicMock())
+
+        asyncio.run(scenario())
+    finally:
+        controls.send_card, controls._can_control = original_send, original_guard
+
+    assert len(rendered) == 4
+    assert "Autoplay On" in rendered[0]
+    assert "Autoplay Off" in rendered[1]
+    assert "Unknown option" in rendered[3]

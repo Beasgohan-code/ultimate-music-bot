@@ -210,6 +210,17 @@ to your password and they do not need your 2FA. If you have posted them
 anywhere, sign out of that Google account on all devices immediately, which
 invalidates them.
 
+## Autoplay
+
+When the queue runs dry the bot can keep going instead of leaving. `/autoplay`
+toggles it per chat (also in `/settings` → Music); it is **off by default**,
+since a bot that keeps playing unprompted in a group is a nuisance.
+
+Each chat remembers its last 40 auto-picks and filters them out, so the
+rotation does not collapse into the same few songs. Three consecutive
+failures — a dead extractor, or a seed with nothing new left — disable it for
+that chat until someone plays something manually.
+
 ## Startup reports
 
 On boot the bot DMs `OWNER_ID` a readiness report: its identity, plus a health

@@ -13,6 +13,7 @@ from bot.config import config
 from bot.services.database import database
 from bot.services.queue import LoopMode, queue_manager
 from bot.services.stream import stream_manager
+from bot.services.autoplay import autoplay
 from bot.utils.cards import action_card, error_card
 from bot.utils.guards import is_admin_or_auth, is_group
 from bot.utils.rich import RichCard, b, c, i, plain, send_card, send_html
@@ -699,3 +700,48 @@ async def cmd_unschedule(message: Message, bot: Bot) -> None:
         await send_card(message, success_card(f"Schedule {target} cancelled."))
     else:
         await send_card(message, error_card(f"No schedule with id {target}.", "See /schedules."))
+@router.message(Command("autoplay"))
+async def cmd_autoplay(message: Message, bot: Bot) -> None:
+    """Toggle endless related-track playback for this chat."""
+    if not await _can_control(message, bot):
+        return
+
+    chat_id = message.chat.id
+    parts = (message.text or "").split(maxsplit=1)
+    arg = (parts[1] if len(parts) > 1 else "").strip().lower()
+    enabled = await autoplay.is_enabled(chat_id)
+
+    if arg in ("on", "enable", "yes", "1"):
+        want = True
+    elif arg in ("off", "disable", "no", "0"):
+        want = False
+    elif not arg:
+        want = not enabled  # bare /autoplay flips it
+    else:
+        await send_card(
+            message,
+            error_card("Unknown option.", "Use /autoplay on, /autoplay off, or just /autoplay."),
+        )
+        return
+
+    await autoplay.set_enabled(chat_id, want)
+    if want:
+        card = (
+            RichCard()
+            .heading([plain("♾️ "), b("Autoplay On")], size=1)
+            .quote(
+                [
+                    [plain("When the queue empties I'll keep going with related tracks.")],
+                    [plain("Recently played songs are skipped, so it won't loop.")],
+                ]
+            )
+            .footer("/autoplay off to stop")
+        )
+    else:
+        autoplay.forget(chat_id)
+        card = (
+            RichCard()
+            .heading([plain("⏹ "), b("Autoplay Off")], size=1)
+            .quote([[plain("I'll leave the voice chat when the queue runs out.")]])
+        )
+    await send_card(message, card)
