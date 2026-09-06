@@ -5185,3 +5185,53 @@ def test_a_failed_refresh_does_not_crash_playback():
             manager._playable_url({"title": "X", "url": "https://youtube.com/watch?v=q"})
         )
     assert url == "https://youtube.com/watch?v=q", "fall back, let the caller report"
+
+
+def test_bare_play_resumes_a_queue_that_survived_a_restart():
+    """
+    The restore notice tells the group to send /play. Bare /play used to
+    print a help card, so a restored queue was unreachable -- the tracks were
+    listed in /queue and nothing could start them.
+    """
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from bot.handlers import play
+    from bot.services.queue import queue_manager
+
+    chat = -100987
+    message = MagicMock()
+    message.chat.id = chat
+    message.answer = AsyncMock(return_value=MagicMock())
+
+    async def scenario():
+        await queue_manager.reset(chat)
+        # Nothing queued: fall through to the help card as before.
+        assert await play._resume_waiting_queue(message) is False
+
+        await queue_manager.try_add(
+            chat,
+            {
+                "title": "Faded",
+                "url": "https://youtube.com/watch?v=a",
+                "requester": "Asha",
+                "requester_id": 777,
+            },
+        )
+        with patch.object(play, "play_track", AsyncMock(return_value=True)) as starter, patch.object(
+            play.stream_manager, "is_playing", lambda _c: False
+        ):
+            assert await play._resume_waiting_queue(message) is True
+
+        assert starter.await_args.kwargs["force"] is True, "the queue is stopped; force it"
+        track = starter.await_args.args[1]
+        assert track["requester"] == "Asha", "credit the original requester, not the resumer"
+
+        # Already playing: /play with no query must not hijack the stream.
+        await queue_manager.try_add(chat, {"title": "B", "url": "u"})
+        with patch.object(play.stream_manager, "is_playing", lambda _c: True):
+            assert await play._resume_waiting_queue(message) is False
+
+        await queue_manager.reset(chat)
+
+    asyncio.run(scenario())

@@ -295,10 +295,43 @@ async def _play_body(
     )
 
 
+async def _resume_waiting_queue(message: Message) -> bool:
+    """Start a queue that is loaded but not playing. True if it started.
+
+    This is the other half of queue persistence. A restart leaves the tracks
+    in place but the voice chat empty -- a PyTgCalls stream cannot be
+    resurrected, the assistant has to rejoin. The restore notice tells people
+    to send /play, so bare /play has to mean "start what is already here"
+    rather than printing a help card at someone who did what they were told.
+    """
+    chat_id = message.chat.id
+    if stream_manager.is_playing(chat_id):
+        return False
+    if not await queue_manager.size(chat_id):
+        return False
+
+    track = await queue_manager.next_track(chat_id)
+    if not track:
+        return False
+
+    status = await message.answer("⏳ <b>Resuming your queue…</b>", parse_mode="HTML")
+    # play_track re-stamps the requester, and the person resuming is not
+    # necessarily the person who queued it. Keep the original credit.
+    original = track.get("requester", "")
+    original_id = track.get("requester_id", 0)
+    started = await play_track(message, track, force=True, edit_msg=status)
+    if started and original:
+        track["requester"] = original
+        track["requester_id"] = original_id
+    return started
+
+
 @router.message(Command("play"))
 async def cmd_play(message: Message) -> None:
     query = extract_query(message)
     if not query:
+        if await _resume_waiting_queue(message):
+            return
         await send_card(
             message,
             RichCard()
@@ -309,6 +342,7 @@ async def cmd_play(message: Message) -> None:
                     [c("/play never gonna give you up"), "Search and stream the top match"],
                     [c("/play <youtube / soundcloud url>"), "Stream that exact track"],
                     [c("/play <playlist url>"), "Queue the whole playlist"],
+                    [c("/play"), "Resume a queue that is loaded but stopped"],
                     [c("/vplay <query>"), "Same, but with video"],
                 ],
             )
