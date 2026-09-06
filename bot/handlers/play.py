@@ -30,6 +30,7 @@ from bot.services.queue import queue_manager
 from bot.services.stream import stream_manager
 from bot.utils.helpers import extract_query, is_group_chat, reply_error
 from bot.utils.cards import (
+    action_card,
     error_card,
     import_card,
     now_playing_card,
@@ -39,7 +40,7 @@ from bot.utils.cards import (
 )
 from bot.services.cleanup import clean_command, schedule_cleanup
 from bot.utils.play_helpers import can_play, play_track
-from bot.utils.rich import send_card, send_html
+from bot.utils.rich import RichCard, b, c, i, plain, send_card, send_html
 
 logger = logging.getLogger(__name__)
 router = Router(name="play")
@@ -173,6 +174,7 @@ async def _import_platform_link(
             return
         _brand(track, resolved, idx)
         track["requester"] = message.from_user.full_name if message.from_user else ""
+        track["requester_id"] = message.from_user.id if message.from_user else 0
         try:
             await queue_manager.add(message.chat.id, track)
             queued += 1
@@ -289,7 +291,21 @@ async def _play_body(
 async def cmd_play(message: Message) -> None:
     query = extract_query(message)
     if not query:
-        await reply_error(message, "Usage: /play <song name or URL>")
+        await send_card(
+            message,
+            RichCard()
+            .heading([plain("🎧 "), b("What should I play?")], size=1)
+            .table(
+                ["Example", "What it does"],
+                [
+                    [c("/play never gonna give you up"), "Search and stream the top match"],
+                    [c("/play <youtube / soundcloud url>"), "Stream that exact track"],
+                    [c("/play <playlist url>"), "Queue the whole playlist"],
+                    [c("/vplay <query>"), "Same, but with video"],
+                ],
+            )
+            .para([i("You can also reply to an audio file with /play.")]),
+        )
         return
     await _resolve_and_play(message, query)
 
@@ -360,20 +376,54 @@ async def cmd_cplay(message: Message) -> None:
     await _resolve_and_play(message, query, queue_only=stream_manager.is_playing(message.chat.id))
 
 
-@router.message(Command("vplay"))
+@router.message(Command("vplay", "video", "playvideo"))
 async def cmd_vplay(message: Message) -> None:
+    """Play with video.
+
+    Video needs a running voice chat *with video enabled* and far more
+    bandwidth than audio, so failures here are common and confusing. The usage
+    card says what actually works instead of a bare "Usage:" line.
+    """
     query = extract_query(message)
     if not query:
-        await reply_error(message, "Usage: /vplay <video name, URL, or MKV link>")
+        await send_card(
+            message,
+            RichCard()
+            .heading([plain("🎬 "), b("Video Play")], size=1)
+            .para([plain("Stream a video into the group's voice chat.")])
+            .table(
+                ["Example", "What it does"],
+                [
+                    [c("/vplay lofi hip hop"), "Search and stream the top match"],
+                    [c("/vplay <youtube url>"), "Stream that exact video"],
+                    [c("/vstream <m3u8 url>"), "Stream a live feed"],
+                ],
+            )
+            .para([i("The voice chat must already be started, and video uses "
+                     "noticeably more bandwidth than audio.")]),
+        )
         return
     await _resolve_and_play(message, query, video=True)
 
 
-@router.message(Command("vstream"))
+@router.message(Command("vstream", "livestream"))
 async def cmd_vstream(message: Message) -> None:
     query = extract_query(message)
     if not query:
-        await reply_error(message, "Usage: /vstream <live URL or m3u8 link>")
+        await send_card(
+            message,
+            RichCard()
+            .heading([plain("📡 "), b("Live Stream")], size=1)
+            .para([plain("Stream a live source into the voice chat.")])
+            .table(
+                ["Example", "Source"],
+                [
+                    [c("/vstream <youtube live url>"), "YouTube live"],
+                    [c("/vstream <m3u8 url>"), "HLS / IPTV feed"],
+                ],
+            )
+            .para([i("A live stream plays until the source stops or someone runs /stop.")]),
+        )
         return
     live = is_live_url(query) or is_url(query)
     await _resolve_and_play(message, query, video=True, live=live)
@@ -418,7 +468,11 @@ async def cmd_pause(message: Message) -> None:
         await reply_error(message, "Nothing is playing.")
         return
     await stream_manager.pause(message.chat.id)
-    await message.answer("⏸ <b>Paused</b>", parse_mode="HTML", reply_markup=player_panel_kb(True, True))
+    await send_card(
+        message,
+        action_card("paused", _actor(message)),
+        reply_markup=player_panel_kb(True, True),
+    )
 
 
 @router.message(Command("resume"))
@@ -427,7 +481,11 @@ async def cmd_resume(message: Message) -> None:
         await reply_error(message, "Nothing to resume.")
         return
     await stream_manager.resume(message.chat.id)
-    await message.answer("▶️ <b>Resumed</b>", parse_mode="HTML", reply_markup=player_panel_kb(True))
+    await send_card(
+        message,
+        action_card("resumed", _actor(message)),
+        reply_markup=player_panel_kb(True),
+    )
 
 
 @router.message(Command("skip"))
@@ -440,6 +498,11 @@ async def cmd_skip(message: Message) -> None:
     if not await _may_skip_now(message):
         return
     await _do_skip(message)
+
+
+def _actor(message: Message) -> str:
+    """Display name of whoever ran the command, for attributed cards."""
+    return message.from_user.full_name if message.from_user else ""
 
 
 async def _may_skip_now(message: Message) -> bool:
@@ -456,7 +519,8 @@ async def _may_skip_now(message: Message) -> bool:
 
     current = await queue_manager.get_current(chat_id)
     # Whoever queued the track may always skip their own request.
-    if current and current.get("requester") == user.full_name:
+    # Compare ids, never display names: a name match is trivially forged.
+    if current and current.get("requester_id") and current["requester_id"] == user.id:
         return True
     if is_sudo(user.id) or await is_admin_or_auth(message.bot, chat_id, user.id):
         return True
@@ -477,9 +541,12 @@ async def _may_skip_now(message: Message) -> bool:
         await send_card(message, error_card("You have already voted to skip.", "Waiting for other listeners to agree."))
         return False
 
+    from bot.keyboards.inline import voteskip_kb
+
     await send_card(
         message,
         voteskip_card(votes, needed, current.get("title", "this track") if current else "this track"),
+        reply_markup=voteskip_kb(votes, needed),
     )
     return False
 
@@ -503,14 +570,42 @@ async def _do_skip(message: Message) -> None:
             reply_markup=player_panel_kb(True),
         )
     else:
-        await send_card(message, success_card("Queue finished.", "Add more with /play."))
+        await send_card(
+            message,
+            action_card(
+                "skipped",
+                _actor(message),
+                note="Nothing left in the queue — leaving the voice chat.",
+            ),
+        )
 
 
-@router.message(Command("stop"))
+@router.message(Command("stop", "end"))
 async def cmd_stop(message: Message) -> None:
-    await stream_manager.stop(message.chat.id)
-    await queue_manager.clear(message.chat.id)
-    await message.answer("⏹ <b>Stopped & queue cleared.</b>", parse_mode="HTML")
+    # grouptools registers /stop <name> to delete a filter, but play.router is
+    # included first, so a bare pass-through there could never be reached.
+    # Defer explicitly when an argument is present.
+    if len((message.text or "").split(maxsplit=1)) > 1 and not message.text.lower().startswith("/end"):
+        from bot.handlers.grouptools import cmd_stop_filter
+
+        await cmd_stop_filter(message, message.bot)
+        return
+
+    chat_id = message.chat.id
+    dropped = await queue_manager.size(chat_id)
+    await stream_manager.stop(chat_id)
+    await queue_manager.clear(chat_id)
+
+    from bot.services.voteskip import voteskip
+
+    # A vote opened against the old track must not survive into the next one.
+    voteskip.reset(chat_id)
+    note = (
+        f"Queue cleared — {dropped} track(s) discarded."
+        if dropped
+        else "The queue was already empty."
+    )
+    await send_card(message, action_card("ended", _actor(message), note=note))
 
 
 @router.message(Command("queue"))
@@ -599,6 +694,7 @@ async def handle_media_file(message: Message, bot: Bot) -> None:
     title = getattr(file, "title", None) or getattr(file, "file_name", "Uploaded Media")
     track = await resolve_telegram_file(path, title)
     track["requester"] = message.from_user.full_name if message.from_user else "Unknown"
+    track["requester_id"] = message.from_user.id if message.from_user else 0
     track["is_video"] = mime.startswith("video/") or fname.lower().endswith((".mp4", ".mkv", ".webm"))
 
     chat_id = message.chat.id

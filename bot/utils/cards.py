@@ -560,3 +560,80 @@ def feature_card(section: str = "overview") -> RichCard:
         )
         .footer("Tap a category below, or ◂ Back to return to the start screen.")
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stream action cards
+#
+# FallenMusic answered every transport action with an attributed card:
+#
+#     ➻ sᴛʀᴇᴀᴍ ᴘᴀᴜsᴇᴅ 🥺
+#     │
+#     └ʙʏ : @someone 🥀
+#
+# Naming who acted matters in a busy group — "Paused" alone leaves everyone
+# wondering whether the bot broke or a person did it. These rebuild that shape
+# as real rich blocks instead of hand-assembled box-drawing characters.
+# ─────────────────────────────────────────────────────────────────────────────
+
+#: icon + label for each transport action
+_ACTIONS = {
+    "paused": ("⏸", "Stream Paused"),
+    "resumed": ("▶️", "Stream Resumed"),
+    "skipped": ("⏭", "Stream Skipped"),
+    "ended": ("⏹", "Stream Ended"),
+    "muted": ("🔇", "Stream Muted"),
+    "unmuted": ("🔊", "Stream Unmuted"),
+    "shuffled": ("🔀", "Queue Shuffled"),
+    "cleared": ("🧹", "Queue Cleared"),
+    "looped": ("🔁", "Loop Updated"),
+    "seeked": ("⏩", "Position Changed"),
+    "volume": ("🔊", "Volume Changed"),
+}
+
+
+def action_card(
+    action: str,
+    by: str = "",
+    *,
+    detail: str = "",
+    note: str = "",
+) -> RichCard:
+    """An attributed transport-action card.
+
+    ``action`` is a key from :data:`_ACTIONS` (unknown keys are title-cased so
+    a new action never renders as a traceback).  ``by`` is the actor's display
+    name, ``detail`` an inline extra ("50%", "track 3"), and ``note`` a full
+    trailing line such as "Queue is empty — leaving the voice chat."
+    """
+    icon, label = _ACTIONS.get(action, ("🎧", action.replace("_", " ").title()))
+    if detail:
+        label = f"{label} — {detail}"
+
+    card = RichCard().heading([_icon(icon), b(label)], size=1)
+    if by:
+        card.para([plain("by "), b(_clip(by, 48))])
+    if note:
+        card.para([i(note)])
+    return card
+
+
+def stream_started_card(track: dict[str, Any], *, video: bool = False) -> RichCard:
+    """FallenMusic's "➻ sᴛᴀʀᴛᴇᴅ sᴛʀᴇᴀᴍɪɴɢ" card, as rich blocks."""
+    kind = "Video" if video else "Audio"
+    rows = [["Duration", fmt_duration(track.get("duration"))]]
+    if track.get("artist"):
+        rows.insert(0, ["Artist", _clip(track["artist"], 40)])
+    if track.get("requester"):
+        rows.append(["Requested by", _clip(track["requester"], 32)])
+    rows.append(["Mode", kind])
+
+    card = (
+        RichCard()
+        .heading([_icon("🎬" if video else "🎧"), b("Started Streaming")], size=1)
+        .para([b(_clip(track.get("title", "Unknown"), 64))])
+        .table(["Detail", "Value"], rows)
+    )
+    if track.get("is_live"):
+        card.para([i("Live stream — it plays until the source stops.")])
+    return card

@@ -502,6 +502,9 @@ def _normalize_entry(entry: dict[str, Any], requester: str = "") -> dict[str, An
         "is_live": bool(entry.get("is_live")),
         "is_video": entry.get("vcodec", "none") != "none",
         "requester": requester,
+        # Display names are not identity: two users can share one, and
+        # anyone can rename themselves to match. Permission checks use this.
+        "requester_id": 0,
         "source": entry.get("extractor_key", "unknown"),
     }
 
@@ -726,5 +729,6 @@ async def resolve_telegram_file(file_path: str, title: str = "Uploaded File") ->
         "is_live": False,
         "is_video": file_path.lower().endswith((".mp4", ".mkv", ".webm", ".avi", ".mov")),
         "requester": "",
+        "requester_id": 0,
         "source": "telegram",
     }

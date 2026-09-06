@@ -479,3 +479,22 @@ def track_links_kb(track: dict) -> InlineKeyboardMarkup:
     rows.append(last)
 
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def voteskip_kb(votes: int, needed: int) -> InlineKeyboardMarkup:
+    """Tap-to-vote button shown under an open skip vote.
+
+    FallenMusic made users retype /skip to add a vote. A button is one tap,
+    shows the live tally on its face, and can be retracted.
+    """
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=f"🗳 ᴠᴏᴛᴇ ᴛᴏ sᴋɪᴘ  ({votes}/{needed})",
+                    callback_data="vote:skip",
+                )
+            ],
+            [InlineKeyboardButton(text="✖ ᴄʟᴏsᴇ", callback_data="ui:close")],
+        ]
+    )

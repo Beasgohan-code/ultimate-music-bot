@@ -98,6 +98,27 @@ class VoteSkipManager:
         vote.voters.add(user_id)
         return len(vote.voters), True
 
+    def remove_vote(
+        self, chat_id: int, user_id: int, track: dict[str, Any] | None
+    ) -> tuple[int, bool]:
+        """Withdraw a vote. Returns (total_votes, was_removed).
+
+        Tapping the vote button again retracts the vote. Without this a
+        mis-tap is permanent for the rest of the track, which feels broken
+        when the button stays on screen.
+        """
+        vote = self.current(chat_id, track)
+        if vote is None or user_id not in vote.voters:
+            return (len(vote.voters) if vote else 0), False
+        vote.voters.discard(user_id)
+        if not vote.voters:
+            self._votes.pop(chat_id, None)
+        return len(vote.voters), True
+
+    def has_voted(self, chat_id: int, user_id: int, track: dict[str, Any] | None) -> bool:
+        vote = self.current(chat_id, track)
+        return bool(vote and user_id in vote.voters)
+
 
 voteskip = VoteSkipManager()
 

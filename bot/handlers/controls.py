@@ -13,6 +13,7 @@ from bot.config import config
 from bot.services.database import database
 from bot.services.queue import LoopMode, queue_manager
 from bot.services.stream import stream_manager
+from bot.utils.cards import action_card, error_card
 from bot.utils.guards import is_admin_or_auth, is_group
 from bot.utils.rich import RichCard, b, c, i, plain, send_card, send_html
 
@@ -158,6 +159,11 @@ async def cmd_position(message: Message) -> None:
 # Mute / unmute the assistant
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _actor(message: Message) -> str:
+    """Display name of whoever ran the command, for attributed cards."""
+    return message.from_user.full_name if message.from_user else ""
+
+
 @router.message(Command("mutevc", "vcmute"))
 async def cmd_mute_vc(message: Message, bot: Bot) -> None:
     if not await _can_control(message, bot):
@@ -167,9 +173,15 @@ async def cmd_mute_vc(message: Message, bot: Bot) -> None:
         return
     try:
         await stream_manager.mute(message.chat.id)
-        await send_html(message, "🔇 <b>Stream muted.</b> Use /unmutevc to restore.")
+        await send_card(
+            message,
+            action_card("muted", _actor(message), note="Use /unmutevc to restore sound."),
+        )
     except Exception as exc:
-        await send_html(message, f"❌ <code>{exc}</code>")
+        from bot.services.callerrors import diagnose
+
+        found = diagnose(exc)
+        await send_card(message, error_card(found.title, found.hint))
 
 
 @router.message(Command("unmutevc", "vcunmute"))
@@ -178,9 +190,12 @@ async def cmd_unmute_vc(message: Message, bot: Bot) -> None:
         return
     try:
         await stream_manager.unmute(message.chat.id)
-        await send_html(message, "🔊 <b>Stream unmuted.</b>")
+        await send_card(message, action_card("unmuted", _actor(message)))
     except Exception as exc:
-        await send_html(message, f"❌ <code>{exc}</code>")
+        from bot.services.callerrors import diagnose
+
+        found = diagnose(exc)
+        await send_card(message, error_card(found.title, found.hint))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -407,7 +422,7 @@ async def cmd_playplaylist(message: Message, bot: Bot) -> None:
 async def cmd_voteskip_config(message: Message) -> None:
     """Show or configure vote-skip for this chat."""
     from bot.services.voteskip import count_listeners, voteskip
-    from bot.utils.cards import error_card, success_card
+    from bot.utils.cards import success_card
 
     if not is_group(message):
         await send_card(message, error_card("Vote-skip only applies to groups.", "In a private chat, just use /skip."))
@@ -513,7 +528,7 @@ def _fmt_offset(minutes: int) -> str:
 @router.message(Command("timezone", "settz"))
 async def cmd_timezone(message: Message, bot: Bot) -> None:
     """Set the chat's UTC offset so schedules use local time."""
-    from bot.utils.cards import error_card, success_card
+    from bot.utils.cards import success_card
 
     args = (message.text or "").split(maxsplit=1)
     current = await _chat_tz(message.chat.id)
@@ -552,7 +567,6 @@ async def cmd_timezone(message: Message, bot: Bot) -> None:
 async def cmd_schedule(message: Message, bot: Bot) -> None:
     """Schedule playback: /schedule [daily] <time> <song or playlist>."""
     from bot.services.scheduler import scheduler
-    from bot.utils.cards import error_card
 
     if not is_group(message):
         await send_card(message, error_card("Scheduling only works in groups.", "Add me to a group with a voice chat to schedule playback."))
@@ -660,7 +674,7 @@ async def cmd_schedules(message: Message) -> None:
 @router.message(Command("unschedule", "delschedule"))
 async def cmd_unschedule(message: Message, bot: Bot) -> None:
     from bot.services.scheduler import scheduler
-    from bot.utils.cards import error_card, success_card
+    from bot.utils.cards import success_card
 
     args = (message.text or "").split(maxsplit=1)
     if len(args) < 2:

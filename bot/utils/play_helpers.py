@@ -74,8 +74,10 @@ async def play_track(
     """Play or queue a track. Returns True on success."""
     chat_id = message.chat.id
     requester = message.from_user.full_name if message.from_user else "Unknown"
+    requester_id = message.from_user.id if message.from_user else 0
     user_id = message.from_user.id if message.from_user else 0
     track["requester"] = requester
+    track["requester_id"] = requester_id
     auto_leave.touch(chat_id)
 
     ok, reason = _within_duration_limit(track)

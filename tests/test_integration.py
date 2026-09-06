@@ -3236,3 +3236,183 @@ def test_close_button_has_a_handler():
         if "cb_close" == handler.callback.__name__:
             found = True
     assert found, "ui:close would silently do nothing"
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Vote-skip
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def test_requester_bypass_uses_id_not_display_name():
+    """A display name is not identity — anyone can copy one."""
+    import inspect
+
+    from bot.handlers import play
+
+    source = inspect.getsource(play._may_skip_now)
+    assert "requester_id" in source, "the bypass must key off a user id"
+    assert 'requester") == user.full_name' not in source, "name comparison is forgeable"
+
+
+def test_tracks_carry_a_requester_id():
+    from bot.services.music import _normalize_entry
+
+    track = _normalize_entry({"id": "abc", "title": "x"}, "Alice")
+    assert "requester_id" in track, "without this the skip bypass cannot be checked"
+
+
+def test_play_records_the_requester_id():
+    import inspect
+
+    from bot.utils import play_helpers
+
+    source = inspect.getsource(play_helpers)
+    assert 'track["requester_id"]' in source
+
+
+def test_votes_can_be_withdrawn():
+    """The vote button stays on screen, so a mis-tap must be reversible."""
+    from bot.services.voteskip import VoteSkipManager
+
+    manager = VoteSkipManager()
+    track = {"id": "song-1"}
+
+    votes, added = manager.add_vote(-100, 111, track)
+    assert (votes, added) == (1, True)
+    assert manager.has_voted(-100, 111, track)
+
+    votes, removed = manager.remove_vote(-100, 111, track)
+    assert (votes, removed) == (0, True)
+    assert not manager.has_voted(-100, 111, track)
+
+    # Withdrawing a vote that was never cast is a no-op, not an error.
+    votes, removed = manager.remove_vote(-100, 222, track)
+    assert removed is False
+
+
+def test_votes_do_not_leak_across_tracks():
+    from bot.services.voteskip import VoteSkipManager
+
+    manager = VoteSkipManager()
+    manager.add_vote(-100, 111, {"id": "song-1"})
+    assert not manager.has_voted(-100, 111, {"id": "song-2"}), "a vote is per track"
+
+
+def test_vote_threshold_ignores_the_assistant():
+    from bot.services.voteskip import VoteSkipManager
+
+    manager = VoteSkipManager()
+    # 4 in the call = 3 humans + the assistant; half of 3 rounds to 2.
+    assert manager.needed(4, 0.5) == 2
+    # Never fewer than MIN_VOTES, even in a tiny call.
+    assert manager.needed(2, 0.1) == 2
+
+
+def test_voteskip_has_a_tap_to_vote_button():
+    from bot.keyboards.inline import voteskip_kb
+
+    kb = voteskip_kb(1, 3)
+    labels = [btn.text for row in kb.inline_keyboard for btn in row]
+    assert any("1/3" in label for label in labels), "the tally belongs on the button"
+    data = [btn.callback_data for row in kb.inline_keyboard for btn in row]
+    assert "vote:skip" in data
+
+
+def test_vote_button_has_a_handler():
+    from bot.handlers import callbacks
+
+    names = {h.callback.__name__ for h in callbacks.router.callback_query.handlers}
+    assert "cb_voteskip" in names, "vote:skip would silently do nothing"
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Attributed action cards (FallenMusic's "└ʙʏ : @user" shape)
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def test_action_cards_name_the_actor():
+    from bot.utils.cards import action_card
+
+    html = action_card("paused", "Alice").to_html()
+    assert "Paused" in html
+    assert "Alice" in html, "a group needs to know who paused the stream"
+
+
+def test_action_card_handles_an_unknown_action():
+    """A new action must not render as a traceback."""
+    from bot.utils.cards import action_card
+
+    assert "Fast Forward" in action_card("fast_forward", "Bob").to_html()
+
+
+def test_action_card_without_an_actor():
+    from bot.utils.cards import action_card
+
+    html = action_card("ended").to_html()
+    assert "Ended" in html
+    assert "by" not in html.lower().split("ended")[-1]
+
+
+def test_transport_commands_are_attributed():
+    import inspect
+
+    from bot.handlers import play
+
+    for name in ("cmd_pause", "cmd_resume", "cmd_stop"):
+        source = inspect.getsource(getattr(play, name))
+        assert "action_card" in source, f"{name} still uses an unattributed message"
+        assert "_actor(" in source, f"{name} does not say who did it"
+
+
+def test_stop_clears_a_pending_vote():
+    """A vote opened on the old track must not carry into the next one."""
+    import inspect
+
+    from bot.handlers import play
+
+    assert "voteskip.reset" in inspect.getsource(play.cmd_stop)
+
+
+def test_stop_with_an_argument_still_deletes_a_filter():
+    """play.router is registered first, so a bare pass-through never ran."""
+    import inspect
+
+    from bot.handlers import play
+
+    source = inspect.getsource(play.cmd_stop)
+    assert "cmd_stop_filter" in source, "/stop <name> would be swallowed by playback"
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Usage cards
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def test_play_commands_show_examples_not_a_usage_line():
+    import inspect
+
+    from bot.handlers import play
+
+    for name in ("cmd_play", "cmd_vplay", "cmd_vstream"):
+        source = inspect.getsource(getattr(play, name))
+        assert "RichCard" in source, f"{name} still replies with a bare usage string"
+
+
+def test_vplay_warns_about_video_requirements():
+    import inspect
+
+    from bot.handlers import play
+
+    source = inspect.getsource(play.cmd_vplay).lower()
+    assert "voice chat" in source and "bandwidth" in source
+
+
+def test_stream_started_card_marks_live_tracks():
+    from bot.utils.cards import stream_started_card
+
+    live = stream_started_card({"title": "News", "is_live": True}).to_html()
+    assert "Live stream" in live
+
+    normal = stream_started_card({"title": "Song", "duration": 200}).to_html()
+    assert "Live stream" not in normal
+    assert "3:20" in normal

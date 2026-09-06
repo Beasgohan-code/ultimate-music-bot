@@ -581,3 +581,64 @@ async def cb_close(query: CallbackQuery) -> None:
             await query.message.edit_reply_markup(reply_markup=None)
     with contextlib.suppress(Exception):
         await query.answer()
+
+
+@router.callback_query(F.data == "vote:skip")
+async def cb_voteskip(query: CallbackQuery) -> None:
+    """Tap to vote (or un-vote) on an open skip vote.
+
+    The card is edited in place so the tally is always current, rather than
+    posting a new message per vote and burying the queue.
+    """
+    import contextlib
+
+    from bot.keyboards.inline import voteskip_kb
+    from bot.services.queue import queue_manager
+    from bot.services.stream import stream_manager
+    from bot.services.voteskip import count_listeners, voteskip
+    from bot.utils.cards import success_card, voteskip_card
+
+    chat_id = query.message.chat.id
+    user = query.from_user
+    current = await queue_manager.get_current(chat_id)
+    if not current:
+        await query.answer("That track already finished.", show_alert=True)
+        with contextlib.suppress(Exception):
+            await query.message.delete()
+        return
+
+    # The requester never needs to vote — they can skip outright.
+    if current.get("requester_id") and current["requester_id"] == user.id:
+        await query.answer("It's your track — use /skip to skip it now.", show_alert=True)
+        return
+
+    listeners = await count_listeners(query.bot, chat_id)
+    needed = voteskip.needed(listeners, await voteskip.ratio(chat_id))
+
+    if voteskip.has_voted(chat_id, user.id, current):
+        votes, _ = voteskip.remove_vote(chat_id, user.id, current)
+        await query.answer("Vote withdrawn.")
+    else:
+        votes, _ = voteskip.add_vote(chat_id, user.id, current)
+        await query.answer("Vote counted.")
+
+    if votes >= needed:
+        voteskip.reset(chat_id)
+        title = current.get("title", "this track")
+        with contextlib.suppress(Exception):
+            await query.message.edit_text(
+                success_card(
+                    f"Vote passed — skipping {title}.", f"{votes} of {needed} listeners agreed."
+                ).to_html(),
+                parse_mode="HTML",
+            )
+        await stream_manager.skip(chat_id)
+        return
+
+    title = current.get("title", "this track")
+    with contextlib.suppress(Exception):
+        await query.message.edit_text(
+            voteskip_card(votes, needed, title).to_html(),
+            parse_mode="HTML",
+            reply_markup=voteskip_kb(votes, needed),
+        )
