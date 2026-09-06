@@ -1,0 +1,18 @@
+# Test and lint dependencies.
+#
+# Kept out of requirements.txt so a deployment does not install a test
+# runner, but pytest.ini sets `asyncio_mode = auto` and the suite is almost
+# entirely `async def` -- without pytest-asyncio, 24 tests fail with
+# "async def functions are not natively supported" and look like real
+# regressions to anyone setting the project up for the first time.
+#
+#   pip install -r requirements.txt -r requirements-dev.txt
+
+-r requirements.txt
+
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
+pyflakes>=3.2.0
+
+# Supplies an ffmpeg binary on hosts without one, so the media tests can run.
+imageio-ffmpeg>=0.5.1

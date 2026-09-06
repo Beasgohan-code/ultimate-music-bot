@@ -436,13 +436,20 @@ With `WEB_ENABLED=true` the bot serves a live status page on `WEB_PORT`:
 ## Testing
 
 ```bash
+pip install -r requirements.txt -r requirements-dev.txt
 python -m pytest tests/ -q
 ```
 
-58 tests covering rich rendering and HTML escaping, command-routing conflicts,
+The dev file matters: `pytest.ini` sets `asyncio_mode = auto` and nearly every
+test is `async def`, so without `pytest-asyncio` two dozen tests fail with
+*"async def functions are not natively supported"* and look like real
+breakage.
+
+298 tests covering rich rendering and HTML escaping, command-routing conflicts,
 queue and loop semantics, warn escalation, word-boundary blacklist matching, lock
 propagation, duration and schedule parsing, placeholder injection safety, locale
-integrity, download-cache behaviour, and vote thresholds.
+integrity, download-cache behaviour, vote thresholds, cookieless mirror
+playback, late stream-URL resolution, and share-link expansion.
 
 Three tests transcode a real generated tone through FFmpeg to prove the download
 pipeline end to end; they skip automatically when FFmpeg is not installed.

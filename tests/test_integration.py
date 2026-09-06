@@ -488,6 +488,60 @@ def test_all_locales_are_valid_json_and_subset_of_english():
         assert not unknown, f"{path.name} has keys missing from en.json: {unknown}"
 
 
+def test_every_offered_language_actually_exists():
+    """
+    The settings menu built its list from LANGUAGE_NAMES while the catalogues
+    came from disk. Eight of the twelve had no file, so choosing Turkish or
+    Arabic silently returned English -- a menu that lies about what it does.
+    """
+    from bot.services.i18n import LANGUAGE_NAMES, translator
+
+    missing = [code for code in LANGUAGE_NAMES if not translator.has(code)]
+    assert not missing, f"offered in the menu but not translated: {missing}"
+
+
+def test_translations_keep_english_placeholders():
+    """
+    A renamed or dropped {placeholder} is not a cosmetic bug: .format() raises
+    KeyError at send time, so the user gets nothing instead of a translation.
+    """
+    import json
+    import re
+
+    from bot.services.i18n import LOCALES_DIR
+
+    token = re.compile(r"\{(\w+)\}")
+    english = json.loads((LOCALES_DIR / "en.json").read_text(encoding="utf-8"))
+
+    problems = []
+    for path in LOCALES_DIR.glob("*.json"):
+        if path.stem == "en":
+            continue
+        for key, value in json.loads(path.read_text(encoding="utf-8")).items():
+            want = set(token.findall(english.get(key, "")))
+            got = set(token.findall(value))
+            if want != got:
+                problems.append(f"{path.name}/{key}: {sorted(got)} != {sorted(want)}")
+    assert not problems, "placeholder mismatch:\n  " + "\n  ".join(problems)
+
+
+def test_every_language_renders_every_string_it_defines():
+    """Catch a stray brace or bad format spec before a user hits it."""
+    from bot.services.i18n import translator
+
+    sample = dict(
+        max=50, pos=3, count=2, mode="all", volume=80, speed=1.5, position="1:23",
+        duration="4:10", limit=15, reason="x", title="T", query="q",
+        language="X", assistant="a",
+    )
+    for lang in translator.languages:
+        for key in translator._catalogues[lang]:
+            try:
+                translator.get(key, lang, **sample)
+            except Exception as exc:  # noqa: BLE001 - the point is to catch all
+                raise AssertionError(f"{lang}/{key} failed to render: {exc}") from exc
+
+
 def test_lock_types_and_disableable_are_sane():
     from bot.services.moderation import DISABLEABLE, LOCK_TYPES
 
