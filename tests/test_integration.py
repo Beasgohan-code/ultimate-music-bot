@@ -3622,3 +3622,118 @@ def test_announcements_can_be_muted_per_chat():
 
     source = inspect.getsource(play.register_stream_notifications)
     assert "announce_tracks" in source, "busy groups need a way to silence these"
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Rich block field validity
+#
+# Tables rendered as an empty grid in production: RichBlockTableCell takes
+# `text`, but the builder passed `blocks=`. Pydantic keeps unknown keys instead
+# of raising, so every cell shipped with text=None and Telegram drew borders
+# around nothing. Nothing in the suite noticed, because the HTML twin — which
+# is what tests assert on — was built by a completely separate code path.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def test_no_rich_block_is_built_with_an_unknown_field():
+    """Static sweep: every kwarg must be a real field on the aiogram type."""
+    import ast
+    import pathlib
+
+    import aiogram.types as telegram_types
+
+    tree = ast.parse(pathlib.Path("bot/utils/rich.py").read_text())
+    problems = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)):
+            continue
+        cls = getattr(telegram_types, node.func.id, None)
+        if cls is None or not hasattr(cls, "model_fields"):
+            continue
+        for kw in node.keywords:
+            if kw.arg and kw.arg not in cls.model_fields:
+                problems.append(
+                    f"line {node.lineno}: {node.func.id}({kw.arg}=...) is not a field; "
+                    f"valid: {sorted(cls.model_fields)}"
+                )
+    assert not problems, "silently dropped rich-block fields:\n" + "\n".join(problems)
+
+
+def test_table_cells_actually_carry_their_text():
+    """The exact production bug: bordered grid, empty cells."""
+    from bot.utils.rich import RichCard, c
+
+    card = RichCard().table(["Setting", "Value"], [["Audio quality", c("high")]])
+    payload = card.to_rich_message().model_dump(exclude_none=True)
+    table = next(b for b in payload["blocks"] if b["type"] == "table")
+
+    for row in table["cells"]:
+        for cell in row:
+            assert cell.get("text"), f"empty table cell: {cell}"
+
+    header = [cell["text"] for cell in table["cells"][0]]
+    assert header == ["Setting", "Value"]
+
+
+def test_every_card_builder_produces_non_empty_cells():
+    """Sweep the real cards users see, not a synthetic one."""
+    from bot.utils import cards
+
+    samples = {
+        "now_playing_card": lambda: cards.now_playing_card(
+            {"title": "Song", "artist": "Artist", "duration": 200, "requester": "Al"},
+            elapsed=10,
+            queue_len=2,
+        ),
+        "queued_card": lambda: cards.queued_card(
+            {"title": "Song", "duration": 100, "requester": "Al"}, 2, 3
+        ),
+        "stream_started_card": lambda: cards.stream_started_card(
+            {"title": "Song", "duration": 100}
+        ),
+        "voteskip_card": lambda: cards.voteskip_card(1, 3, "Song"),
+    }
+
+    for name, build in samples.items():
+        payload = build().to_rich_message().model_dump(exclude_none=True)
+        for block in payload["blocks"]:
+            if block["type"] != "table":
+                continue
+            for row in block["cells"]:
+                for cell in row:
+                    assert cell.get("text") not in (None, ""), f"{name}: empty cell {cell}"
+
+
+def test_ordered_lists_are_actually_numbered():
+    """is_ordered is not a field; ordering comes from each item's value."""
+    from bot.utils.rich import RichCard
+
+    ordered = RichCard().bullets(["a", "b"], ordered=True)
+    values = [
+        item.get("value")
+        for item in ordered.to_rich_message().model_dump(exclude_none=True)["blocks"][0]["items"]
+    ]
+    assert values == [1, 2], "ordered list rendered as plain bullets"
+
+    plain_list = RichCard().bullets(["a", "b"])
+    payload = plain_list.to_rich_message().model_dump(exclude_none=True)
+    assert all("value" not in item for item in payload["blocks"][0]["items"])
+
+
+def test_rich_and_html_twins_agree_on_table_content():
+    """The HTML twin passed while the rich path was broken — keep them in sync."""
+    from bot.utils.rich import RichCard
+
+    card = RichCard().table(["Key", "Value"], [["Storage", "json"]])
+    html = card.to_html()
+    payload = card.to_rich_message().model_dump(exclude_none=True)
+    table = next(b for b in payload["blocks"] if b["type"] == "table")
+
+    flat = []
+    for row in table["cells"]:
+        for cell in row:
+            text = cell["text"]
+            flat.append(text if isinstance(text, str) else "".join(s["text"] for s in text))
+
+    for value in flat:
+        assert value in html, f"{value!r} is in the rich table but missing from the HTML twin"

@@ -300,15 +300,21 @@ class RichCard:
                         )
                     )
                 case "list":
+                    # There is no is_ordered on InputRichBlockList — ordering
+                    # comes from each item's `value` ordinal. Passing
+                    # is_ordered= was silently dropped, so every ordered list
+                    # rendered as plain bullets.
+                    ordered = bool(p["ordered"])
                     items = [
                         InputRichBlockListItem(
-                            blocks=[InputRichBlockParagraph(text=_rich_text(it))]
+                            blocks=[InputRichBlockParagraph(text=_rich_text(it))],
+                            value=(index if ordered else None),
                         )
-                        for it in p["items"]
+                        for index, it in enumerate(p["items"], 1)
                     ]
                     if not items:
                         continue
-                    blocks.append(InputRichBlockList(items=items, is_ordered=p["ordered"] or None))
+                    blocks.append(InputRichBlockList(items=items))
                 case "checklist":
                     items = [
                         InputRichBlockListItem(
@@ -322,12 +328,16 @@ class RichCard:
                         continue
                     blocks.append(InputRichBlockList(items=items))
                 case "table":
+                    # RichBlockTableCell takes `text`, NOT `blocks`. Passing
+                    # blocks= left every cell's text as None, so Telegram drew
+                    # the grid with nothing in it — pydantic keeps the unknown
+                    # key rather than raising, so this failed silently.
                     cells: list[list[RichBlockTableCell]] = []
                     if p["header"]:
                         cells.append(
                             [
                                 RichBlockTableCell(
-                                    blocks=[InputRichBlockParagraph(text=_rich_text(h))],
+                                    text=_rich_text(h),
                                     is_header=True,
                                     align="center",
                                     valign="middle",
@@ -339,7 +349,7 @@ class RichCard:
                         cells.append(
                             [
                                 RichBlockTableCell(
-                                    blocks=[InputRichBlockParagraph(text=_rich_text(cell))],
+                                    text=_rich_text(cell),
                                     align="left",
                                     valign="middle",
                                 )
