@@ -5066,3 +5066,122 @@ def test_mirror_stream_urls_are_anchored_to_the_instance_that_issued_them():
     same = mirrors._proxy("https://yewtu.be/videoplayback?expire=1", "https://yewtu.be")
     assert same == "https://yewtu.be/videoplayback?expire=1"
     assert mirrors._proxy("", "https://yewtu.be") == ""
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Stream URLs are resolved late
+#
+# A queue outlives the URLs in it. Persistence drops the signed URL on
+# purpose, and a long queue sits past the CDN expiry stamp. Both used to
+# reach ffmpeg unchanged.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def test_a_watch_page_is_not_a_playable_url():
+    from bot.services.stream import StreamManager
+
+    check = StreamManager._is_playable
+    for page in (
+        "https://youtube.com/watch?v=abc",
+        "https://youtu.be/abc",
+        "https://youtube.com/shorts/abc",
+        "https://open.spotify.com/track/abc",
+        "",
+    ):
+        assert check(page) is False, f"{page} is a web page, not audio"
+    for media in (
+        "https://rr3---sn-x.googlevideo.com/videoplayback?itag=251",
+        "https://yewtu.be/videoplayback?host=rr3.googlevideo.com",
+        "/tmp/song.mp3",
+    ):
+        assert check(media) is True, media
+
+
+def test_an_expired_signature_is_detected_before_ffmpeg_sees_it():
+    import time
+
+    from bot.services.stream import StreamManager
+
+    expired = StreamManager._expired
+    assert expired(f"https://x/vp?expire={int(time.time()) - 5}") is True
+    assert expired(f"https://x/vp?expire={int(time.time()) + 7200}") is False
+    assert expired("https://x/vp?itag=140") is False, "no stamp means no opinion"
+    assert expired("https://x/vp?expire=notanumber") is False
+
+
+def test_a_queue_that_survived_a_restart_still_plays():
+    """
+    The bug this pins: persistence strips the signed URL (correctly -- it
+    would be dead), so every restored track fell back to track['url'], which
+    is an HTML watch page. ffmpeg cannot play HTML.
+    """
+    import asyncio
+    from unittest.mock import patch
+
+    from bot.services import persistence
+    from bot.services.stream import StreamManager
+
+    manager = StreamManager.__new__(StreamManager)
+    restored = persistence._slim(
+        {
+            "title": "Faded",
+            "url": "https://youtube.com/watch?v=60ItHLz5WEA",
+            "id": "60ItHLz5WEA",
+            "stream_url": "https://rr3.googlevideo.com/vp?expire=1700000000",
+        }
+    )
+    assert "stream_url" not in restored, "the snapshot should not keep a dead URL"
+
+    async def resolver(query, **kwargs):
+        return {"title": "Faded", "stream_url": "https://fresh/audio", "duration": 212}
+
+    with patch("bot.services.music.get_stream_url", resolver):
+        url = asyncio.run(manager._playable_url(restored))
+
+    assert url == "https://fresh/audio"
+    assert restored["stream_url"] == url, "cache it back, or seek re-resolves"
+    assert restored["duration"] == 212, "backfill metadata the snapshot lost"
+
+
+def test_a_live_url_is_never_resolved_twice():
+    """Re-resolving a good URL would double the extractor load on every play."""
+    import asyncio
+    import time
+    from unittest.mock import patch
+
+    from bot.services.stream import StreamManager
+
+    manager = StreamManager.__new__(StreamManager)
+    calls = {"n": 0}
+
+    async def spy(query, **kwargs):
+        calls["n"] += 1
+        return None
+
+    good = {
+        "title": "New",
+        "stream_url": f"https://rr3.googlevideo.com/vp?expire={int(time.time()) + 7200}",
+    }
+    with patch("bot.services.music.get_stream_url", spy):
+        url = asyncio.run(manager._playable_url(good))
+
+    assert url == good["stream_url"]
+    assert calls["n"] == 0
+
+
+def test_a_failed_refresh_does_not_crash_playback():
+    import asyncio
+    from unittest.mock import patch
+
+    from bot.services.stream import StreamManager
+
+    manager = StreamManager.__new__(StreamManager)
+
+    async def boom(query, **kwargs):
+        raise RuntimeError("blocked")
+
+    with patch("bot.services.music.get_stream_url", boom):
+        url = asyncio.run(
+            manager._playable_url({"title": "X", "url": "https://youtube.com/watch?v=q"})
+        )
+    assert url == "https://youtube.com/watch?v=q", "fall back, let the caller report"

@@ -7,6 +7,7 @@ queue advancement when a track ends.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from typing import Any, Callable
 
@@ -157,10 +158,93 @@ class StreamManager:
             parts.append(f"-af {','.join(audio_filters)}")
         return " ".join(parts) if parts else None
 
+    @staticmethod
+    def _is_playable(url: str) -> bool:
+        """Is this something ffmpeg can actually read as media?
+
+        A page URL is not. ``https://youtube.com/watch?v=...`` is HTML, and
+        ffmpeg fails on it with a decode error rather than anything that
+        explains itself.
+        """
+        if not url:
+            return False
+        low = url.lower()
+        if low.startswith(("/", "file://")):
+            return True
+        return not any(
+            host in low
+            for host in (
+                "youtube.com/watch",
+                "youtu.be/",
+                "youtube.com/shorts",
+                "open.spotify.com",
+                "music.apple.com",
+                "deezer.com",
+                "soundcloud.com/",
+            )
+        )
+
+    @staticmethod
+    def _expired(url: str) -> bool:
+        """True when a signed CDN URL has passed its ``expire`` stamp.
+
+        YouTube stamps an expiry into the query string, normally a few hours
+        out. A queue can easily outlive it, and the failure is a 403 several
+        seconds into playback rather than at play() time.
+        """
+        match = re.search(r"[?&]expire=(\d{9,})", url or "")
+        if not match:
+            return False
+        try:
+            # 60s of slack: a URL about to die mid-track is already useless.
+            return int(match.group(1)) <= time.time() + 60
+        except ValueError:
+            return False
+
+    async def _playable_url(self, track: dict[str, Any]) -> str:
+        """Return a URL ffmpeg can stream, re-resolving it when stale.
+
+        Queues outlive their stream URLs. A snapshot restored after a restart
+        deliberately drops the signed URL (it would be dead anyway), and a
+        long queue can sit for hours past the CDN expiry stamp. Both used to
+        reach ffmpeg as-is: the first as an HTML watch page, the second as a
+        403 a few seconds in. Resolve late instead — at the moment of play,
+        when the URL only has to survive one track.
+        """
+        url = track.get("stream_url") or ""
+        if url and self._is_playable(url) and not self._expired(url):
+            return url
+
+        query = track.get("url") or track.get("id") or track.get("title") or ""
+        if not query:
+            return url or track.get("url", "")
+
+        try:
+            from bot.services.music import get_stream_url
+
+            fresh = await get_stream_url(query)
+        except Exception as exc:
+            logger.warning("Could not refresh the stream for %r: %s", query, exc)
+            fresh = None
+
+        if fresh and fresh.get("stream_url"):
+            logger.info("Refreshed a stale stream URL for %r", track.get("title", query))
+            # Mutate in place: the caller holds this dict as the current
+            # track, and seek/replay must not resolve it a second time.
+            track["stream_url"] = fresh["stream_url"]
+            for key in ("thumbnail", "duration", "is_live"):
+                if not track.get(key) and fresh.get(key):
+                    track[key] = fresh[key]
+            return fresh["stream_url"]
+
+        # Nothing better available. Hand back what we had so the caller's
+        # existing failure path reports it, rather than inventing a new one.
+        return url or track.get("url", "")
+
     async def _build_stream(
         self, chat_id: int, track: dict[str, Any], *, seek: int = 0
     ) -> MediaStream:
-        url = track.get("stream_url") or track.get("url", "")
+        url = await self._playable_url(track)
         is_video = bool(track.get("is_video"))
         audio_q, video_q = await self._qualities(chat_id)
         volume = await queue_manager.get_volume(chat_id)
