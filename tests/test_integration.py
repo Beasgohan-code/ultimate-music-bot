@@ -5021,3 +5021,48 @@ def test_the_blocked_hint_no_longer_demands_cookies():
 
     assert "COOKIES_DATA" not in BLOCKED_HINT
     assert "mirror" in BLOCKED_HINT.lower()
+
+
+def test_mirror_stream_urls_are_anchored_to_the_instance_that_issued_them():
+    """
+    The quiet killer of this whole approach. A mirror resolves the video on
+    its own IP and YouTube signs the URL for *that* IP. Hand the raw
+    googlevideo link to ffmpeg here and it 403s a few seconds in -- after the
+    card already said "Now Playing", which is worse than an honest failure.
+    """
+    from bot.services import mirrors
+
+    inv = {
+        "videoId": "abc12345678",
+        "title": "T",
+        "author": "A",
+        "lengthSeconds": "10",
+        "adaptiveFormats": [
+            {
+                "type": "audio/webm",
+                "bitrate": "160000",
+                "url": "https://rr3---sn-x.googlevideo.com/videoplayback?itag=251",
+            }
+        ],
+    }
+    url = mirrors._from_invidious(inv, "https://yewtu.be")["stream_url"]
+    assert "googlevideo.com/videoplayback" not in url, "raw signed URL would 403"
+    assert url.startswith("https://yewtu.be/")
+    assert "host=rr3---sn-x.googlevideo.com" in url, "proxy needs the origin host"
+
+    piped = {
+        "title": "T",
+        "uploader": "U",
+        "duration": 10,
+        "audioStreams": [
+            {"bitrate": 192000, "url": "https://rr1---sn-y.googlevideo.com/vp?itag=251"}
+        ],
+    }
+    assert mirrors._from_piped(piped, "https://pipedapi.kavin.rocks")[
+        "stream_url"
+    ].startswith("https://pipedapi.kavin.rocks/")
+
+    # A URL the instance already localised must not be mangled twice.
+    same = mirrors._proxy("https://yewtu.be/videoplayback?expire=1", "https://yewtu.be")
+    assert same == "https://yewtu.be/videoplayback?expire=1"
+    assert mirrors._proxy("", "https://yewtu.be") == ""

@@ -30,6 +30,7 @@ import logging
 import random
 import time
 from typing import Any, Iterable
+from urllib.parse import urlsplit
 
 import aiohttp
 
@@ -138,6 +139,39 @@ async def _race(paths: list[tuple[str, str]]) -> tuple[str, Any] | None:
 
 
 # ── shape normalisation ────────────────────────────────────────────────────
+def _proxy(url: str, base: str) -> str:
+    """Route a raw googlevideo URL back through the instance that issued it.
+
+    This is the subtle failure mode of the whole approach. A mirror resolves
+    the video on *its* IP, and the URL YouTube hands back is signed for that
+    IP. Give it straight to ffmpeg on our server and YouTube answers 403 --
+    typically a few seconds in, after the card already said "Now Playing",
+    which is worse than failing outright.
+
+    Both projects proxy the bytes for exactly this reason. Invidious does it
+    when asked with ``local=true``; Piped hands back a proxy base. What is
+    left here is the case where an instance ignored that and returned a bare
+    googlevideo link anyway, so we rewrite it ourselves.
+    """
+    if not url:
+        return ""
+    # Already relative to the instance ("/videoplayback?..."): just anchor it.
+    if url.startswith("/"):
+        return f"{base.rstrip('/')}{url}"
+    if "googlevideo.com" not in url:
+        return url
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return url
+    # The instance proxy needs to know which googlevideo host to fetch from;
+    # both projects spell that as a ``host`` query parameter.
+    query = parts.query
+    if "host=" not in query:
+        query = f"{query}&host={parts.netloc}" if query else f"host={parts.netloc}"
+    return f"{base.rstrip('/')}{parts.path}?{query}"
+
+
 def _pick_audio(streams: list[dict[str, Any]]) -> str:
     """Best audio-only URL from an Invidious adaptiveFormats list."""
     best, best_rate = "", -1
@@ -159,7 +193,7 @@ def _pick_audio(streams: list[dict[str, Any]]) -> str:
     return best
 
 
-def _from_invidious(data: dict[str, Any]) -> dict[str, Any] | None:
+def _from_invidious(data: dict[str, Any], base: str = "") -> dict[str, Any] | None:
     if not isinstance(data, dict):
         return None
     url = _pick_audio(data.get("adaptiveFormats") or [])
@@ -178,7 +212,7 @@ def _from_invidious(data: dict[str, Any]) -> dict[str, Any] | None:
         "duration": int(data.get("lengthSeconds") or 0) or None,
         "url": f"https://youtube.com/watch?v={video_id}" if video_id else "",
         "id": video_id,
-        "stream_url": url,
+        "stream_url": _proxy(url, base) if base else url,
         "thumbnail": _invidious_thumb(data),
         "source": "youtube",
         "via": "invidious",
@@ -194,7 +228,7 @@ def _invidious_thumb(data: dict[str, Any]) -> str:
     return ""
 
 
-def _from_piped(data: dict[str, Any]) -> dict[str, Any] | None:
+def _from_piped(data: dict[str, Any], base: str = "") -> dict[str, Any] | None:
     if not isinstance(data, dict):
         return None
     best, best_rate = "", -1
@@ -215,7 +249,7 @@ def _from_piped(data: dict[str, Any]) -> dict[str, Any] | None:
         "duration": int(data.get("duration") or 0) or None,
         "url": "",
         "id": "",
-        "stream_url": best,
+        "stream_url": _proxy(best, base) if base else best,
         "thumbnail": data.get("thumbnailUrl") or "",
         "source": "youtube",
         "via": "piped",
@@ -233,12 +267,12 @@ async def fetch_stream(video_id: str) -> dict[str, Any] | None:
         return None
 
     invidious = [
-        (base, f"{base}/api/v1/videos/{video_id}")
+        (base, f"{base}/api/v1/videos/{video_id}?local=true")
         for base in _healthy(INVIDIOUS)[:FANOUT]
     ]
     won = await _race(invidious)
     if won:
-        track = _from_invidious(won[1])
+        track = _from_invidious(won[1], won[0])
         if track:
             logger.info("Resolved %s via %s", video_id, won[0])
             return track
@@ -249,7 +283,7 @@ async def fetch_stream(video_id: str) -> dict[str, Any] | None:
     ]
     won = await _race(piped)
     if won:
-        track = _from_piped(won[1])
+        track = _from_piped(won[1], won[0])
         if track:
             track["id"] = video_id
             track["url"] = f"https://youtube.com/watch?v={video_id}"
