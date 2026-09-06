@@ -5436,3 +5436,57 @@ def test_mirror_tracks_render_in_every_card():
     assert cards.queued_card(track, 2, 3).to_html()
     assert cards.track_info_card(track).to_html()
     assert cards.queue_card(track, [track]).to_html()
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Uploaded Telegram files
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def test_an_uploaded_filename_cannot_escape_the_download_dir():
+    """
+    file_name arrives off the wire and is fully attacker-controlled.
+    os.path.join(dir, "/etc/passwd") silently discards dir and returns an
+    absolute path; "../../x" walks out of it.
+    """
+    import os
+
+    from bot.handlers.play import _safe_filename
+
+    root = "/data/downloads/upload-1"
+    for hostile in (
+        "../../../../etc/cron.d/pwn",
+        "..\\..\\windows\\system32\\x",
+        "/etc/passwd",
+        "...",
+        "",
+        ".bashrc",
+        "a" * 400 + ".mp3",
+    ):
+        joined = os.path.join(root, _safe_filename(hostile))
+        assert joined.startswith(root + "/"), f"{hostile!r} escaped to {joined}"
+
+    # Ordinary names survive intact, extension included -- ffmpeg and yt-dlp
+    # both use it as a format hint.
+    assert _safe_filename("My Song (Live) [HD].m4a") == "My Song (Live) [HD].m4a"
+    assert _safe_filename("song.mp3") == "song.mp3"
+
+
+def test_uploads_land_where_the_janitor_will_find_them():
+    """
+    Uploads used to go to tempfile.mkdtemp(). The hourly janitor only prunes
+    DOWNLOAD_DIR, so every uploaded file leaked until the disk filled up --
+    which on an ephemeral host means the bot dies.
+    """
+    import inspect
+
+    from bot.handlers import play
+
+    source = inspect.getsource(play.handle_media_file)
+    # Ignore comments: this file explains *why* mkdtemp is wrong.
+    code = "\n".join(
+        line.split("#", 1)[0] for line in source.splitlines()
+    )
+    assert "mkdtemp" not in code, "mkdtemp is outside the janitor's reach"
+    assert "DOWNLOAD_DIR" in code
+    assert "_safe_filename" in code, "the filename must be sanitised first"

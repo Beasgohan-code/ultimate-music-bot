@@ -6,7 +6,7 @@ import asyncio
 import contextlib
 import logging
 import os
-import tempfile
+import time
 
 from aiogram import Bot, F, Router
 from aiogram.filters import Command
@@ -730,6 +730,23 @@ async def cmd_volume(message: Message) -> None:
     )
 
 
+def _safe_filename(name: str) -> str:
+    """Reduce an uploaded file's name to a harmless basename.
+
+    ``file_name`` comes off the wire and is entirely attacker-controlled.
+    os.path.join(dir, "/etc/passwd") silently discards ``dir`` and returns an
+    absolute path, and "../../x" walks out of it -- so the name has to be
+    stripped to its last component before it can be joined to anything.
+    """
+    base = os.path.basename((name or "").replace("\\", "/")).strip()
+    # Drop leading dots so nothing becomes a dotfile or stays a "..".
+    base = base.lstrip(".")
+    safe = "".join(ch for ch in base if ch.isalnum() or ch in " ._-()[]")
+    safe = safe.strip() or "media"
+    # Keep the extension: ffmpeg and yt-dlp both use it as a format hint.
+    return safe[-120:]
+
+
 @router.message(F.audio | F.voice | F.video | F.document)
 async def handle_media_file(message: Message, bot: Bot) -> None:
     """Play uploaded audio/video files (MP3, MKV, MP4, etc.)."""
@@ -754,8 +771,16 @@ async def handle_media_file(message: Message, bot: Bot) -> None:
         return
 
     status = await message.reply("⏳ <b>Processing file…</b>", parse_mode="HTML")
-    tmp = tempfile.mkdtemp()
-    path = os.path.join(tmp, fname)
+    # Download into DOWNLOAD_DIR, not tempfile.mkdtemp(). The hourly janitor
+    # only prunes DOWNLOAD_DIR, so a dir created anywhere else was never
+    # collected -- every uploaded file leaked until the host ran out of disk.
+    # It cannot be deleted right after playing either: PyTgCalls streams from
+    # this path for the whole track, and a queued file is read much later.
+    from bot.config import DOWNLOAD_DIR
+
+    tmp = DOWNLOAD_DIR / f"upload-{int(time.time() * 1000)}-{message.chat.id}"
+    tmp.mkdir(parents=True, exist_ok=True)
+    path = os.path.join(tmp, _safe_filename(fname))
     await bot.download(file, destination=path)
 
     from bot.services.music import resolve_telegram_file
