@@ -9,7 +9,11 @@ projects:
       name: ultimate-music-bot
       runtime: python
       repo: https://github.com/Beasgohan-code/ultimate-music-bot
-      branch: main
+      # `main` is an unrelated history stuck at the pre-fix code: no Spotify
+      # support, no error handling, and the broken assistant check that made
+      # every group unplayable. Deploy the branch that carries the fixes until
+      # main is reconciled.
+      branch: arena/01a07134-ultimate-music-bot
       plan: free
       envVars:
       # Render's default is now Python 3.14, which is newer than ntgcalls and

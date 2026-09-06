@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 
 from aiogram.types import Message
@@ -16,8 +17,9 @@ from bot.services.stats import bot_stats
 from bot.services.stream import stream_manager
 from bot.utils.cards import error_card, now_playing_card, queued_card
 from bot.utils.guards import is_admin_or_auth
+from bot.services import assistant
 from bot.services.callerrors import diagnose
-from bot.utils.helpers import ensure_assistant_in_chat, is_group_chat
+from bot.utils.helpers import is_group_chat
 from bot.utils.rich import send_card
 
 logger = logging.getLogger(__name__)
@@ -82,10 +84,17 @@ async def play_track(
         return False
 
     if is_group_chat(message):
-        err = await ensure_assistant_in_chat(message.bot, chat_id)
-        if err:
-            await send_card(message, error_card(err), edit=edit_msg)
+        # Invite the assistant rather than telling the user to do it.
+        joined = await assistant.ensure_present(message.bot, chat_id)
+        if not joined.ok:
+            await send_card(message, error_card(joined.title, joined.hint), edit=edit_msg)
             return False
+        if joined.joined_now and edit_msg:
+            with contextlib.suppress(Exception):
+                await edit_msg.edit_text(
+                    f"🤝 <b>{assistant.label()} joined</b> — starting…",
+                    parse_mode="HTML",
+                )
 
     should_start = force or (not queue_only and not stream_manager.is_playing(chat_id))
 

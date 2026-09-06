@@ -2450,7 +2450,9 @@ def _fake_assistant(monkeypatch, user_id=7777777, working=True):
     from bot.services import stream as stream_mod
     from bot.utils import helpers
 
-    monkeypatch.setattr(helpers, "_assistant_id", None)
+    from bot.services import assistant as assistant_service
+
+    assistant_service.reset()
     client = MagicMock()
     if working:
         me = MagicMock()
@@ -2596,3 +2598,175 @@ def test_success_card_has_no_redundant_banner():
     html = success_card("Queue cleared.").to_html()
     assert "Done" not in html
     assert "Queue cleared." in html
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Assistant auto-join
+#
+# Telling someone to add the assistant by hand is a poor experience, and was
+# actively wrong when the membership check was broken. FallenMusic's play
+# flow invites the assistant itself; this does the same.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def _assistant_env(
+    monkeypatch, *, status=None, username=None, join_error=None, id_ok=True
+):
+    from unittest.mock import AsyncMock, MagicMock
+
+    from bot.services import assistant
+    from bot.services import stream as stream_mod
+
+    assistant.reset()
+
+    client = MagicMock()
+    if id_ok:
+        me = MagicMock()
+        me.id = 777
+        client.get_me = AsyncMock(return_value=me)
+    else:
+        client.get_me = AsyncMock(side_effect=RuntimeError("not connected"))
+    client.join_chat = (
+        AsyncMock(side_effect=join_error) if join_error else AsyncMock()
+    )
+    monkeypatch.setattr(stream_mod.stream_manager, "_user_client", client, raising=False)
+
+    bot = AsyncMock()
+    if status:
+        bot.get_chat_member = AsyncMock(return_value=MagicMock(status=status))
+    else:
+        bot.get_chat_member = AsyncMock(side_effect=Exception("user not found"))
+    chat = MagicMock()
+    chat.username = username
+    chat.invite_link = None
+    bot.get_chat = AsyncMock(return_value=chat)
+    bot.export_chat_invite_link = AsyncMock(return_value="https://t.me/+abc123")
+
+    return assistant, bot, client
+
+
+def test_assistant_already_present_just_plays(monkeypatch):
+    """The reported bug: assistant in the group, bot refused to play."""
+    import asyncio
+
+    assistant, bot, _ = _assistant_env(monkeypatch, status="member")
+    result = asyncio.run(assistant.ensure_present(bot, -1001))
+
+    assert result.ok
+    assert not result.joined_now
+    assert isinstance(bot.get_chat_member.call_args.args[1], int)
+
+
+def test_missing_assistant_is_invited_not_delegated(monkeypatch):
+    import asyncio
+
+    assistant, bot, client = _assistant_env(monkeypatch, username="publicgroup")
+    result = asyncio.run(assistant.ensure_present(bot, -1002))
+
+    assert result.ok and result.joined_now
+    assert client.join_chat.await_count == 1
+    assert client.join_chat.call_args.args[0] == "@publicgroup"
+
+
+def test_private_groups_use_an_exported_link(monkeypatch):
+    import asyncio
+
+    assistant, bot, client = _assistant_env(monkeypatch)
+    result = asyncio.run(assistant.ensure_present(bot, -1003))
+
+    assert result.ok and result.joined_now
+    assert client.join_chat.call_args.args[0].startswith("https://t.me/+")
+
+
+def test_missing_invite_permission_is_explained(monkeypatch):
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    assistant, bot, _ = _assistant_env(monkeypatch)
+    bot.export_chat_invite_link = AsyncMock(
+        side_effect=Exception("CHAT_ADMIN_REQUIRED: not enough rights")
+    )
+    result = asyncio.run(assistant.ensure_present(bot, -1004))
+
+    assert not result.ok
+    assert "invite" in result.hint.lower()
+    assert "CHAT_ADMIN_REQUIRED" not in result.title
+
+
+def test_banned_assistant_is_named_as_banned(monkeypatch):
+    import asyncio
+
+    assistant, bot, _ = _assistant_env(monkeypatch, status="kicked")
+    result = asyncio.run(assistant.ensure_present(bot, -1005))
+
+    assert not result.ok
+    assert "banned" in result.title.lower()
+    assert "unban" in result.hint.lower()
+
+
+def test_already_participant_is_success_not_failure(monkeypatch):
+    """A join race must not surface as an error."""
+    import asyncio
+
+    assistant, bot, _ = _assistant_env(
+        monkeypatch, join_error=Exception("UserAlreadyParticipant")
+    )
+    assert asyncio.run(assistant.ensure_present(bot, -1006)).ok
+
+
+def test_unknown_assistant_id_never_blocks_playback(monkeypatch):
+    """A fabricated "add the assistant" is worse than attempting the play."""
+    import asyncio
+
+    assistant, bot, _ = _assistant_env(monkeypatch, id_ok=False)
+    result = asyncio.run(assistant.ensure_present(bot, -1007))
+
+    assert result.ok
+    assert not bot.get_chat_member.called
+
+
+def test_presence_is_cached_per_chat(monkeypatch):
+    import asyncio
+
+    assistant, bot, _ = _assistant_env(monkeypatch, status="member")
+
+    async def twice():
+        await assistant.ensure_present(bot, -1008)
+        await assistant.ensure_present(bot, -1008)
+
+    asyncio.run(twice())
+    assert bot.get_chat_member.await_count == 1
+
+    assistant.forget(-1008)
+    asyncio.run(assistant.ensure_present(bot, -1008))
+    assert bot.get_chat_member.await_count == 2
+
+
+def test_expired_invite_link_is_explained(monkeypatch):
+    import asyncio
+
+    assistant, bot, _ = _assistant_env(
+        monkeypatch, join_error=Exception("INVITE_HASH_EXPIRED")
+    )
+    result = asyncio.run(assistant.ensure_present(bot, -1009))
+
+    assert not result.ok
+    assert "expired" in result.title.lower()
+
+
+def test_playback_invites_instead_of_asking(monkeypatch):
+    import inspect
+
+    from bot.utils import play_helpers
+
+    source = inspect.getsource(play_helpers.play_track)
+    assert "assistant.ensure_present" in source
+    assert "ensure_assistant_in_chat" not in source
+
+
+def test_render_deploys_the_branch_with_the_fixes():
+    """main is an unrelated history stuck on pre-fix code."""
+    import pathlib
+
+    text = pathlib.Path("render.yaml").read_text()
+    assert "branch: main" not in text, "main lacks every fix in this branch"

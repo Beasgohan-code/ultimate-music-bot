@@ -13,7 +13,7 @@ from aiogram.types import Message
 
 from bot.keyboards.inline import player_panel_kb, search_results_kb
 from bot.config import config
-from bot.services import platforms
+from bot.services import assistant, platforms
 from bot.services.autoleave import auto_leave
 from bot.services.music import (
     BLOCKED_HINT,
@@ -27,7 +27,7 @@ from bot.services.music import (
 )
 from bot.services.queue import queue_manager
 from bot.services.stream import stream_manager
-from bot.utils.helpers import ensure_assistant_in_chat, extract_query, is_group_chat, reply_error
+from bot.utils.helpers import extract_query, is_group_chat, reply_error
 from bot.utils.cards import (
     error_card,
     import_card,
@@ -541,8 +541,9 @@ async def handle_media_file(message: Message, bot: Bot) -> None:
     if not allowed:
         return
 
-    err = await ensure_assistant_in_chat(bot, message.chat.id)
-    if err:
+    joined = await assistant.ensure_present(bot, message.chat.id)
+    if not joined.ok:
+        await send_card(message, error_card(joined.title, joined.hint))
         return
 
     status = await message.reply("⏳ <b>Processing file…</b>", parse_mode="HTML")

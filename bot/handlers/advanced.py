@@ -32,7 +32,7 @@ from bot.utils.formatters import (
     search_results_card,
     success_card,
 )
-from bot.utils.helpers import ensure_assistant_in_chat, extract_query, is_group_chat, reply_error
+from bot.utils.helpers import extract_query, is_group_chat, reply_error
 from bot.utils.play_helpers import play_track
 
 logger = logging.getLogger(__name__)

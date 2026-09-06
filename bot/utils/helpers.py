@@ -43,79 +43,25 @@ def is_group_chat(message: Message) -> bool:
     return message.chat.type in ("group", "supergroup")
 
 
-#: Cached numeric id of the assistant account, resolved once from its own
-#: session. Usernames are not usable here (see below) and can also change.
-_assistant_id: int | None = None
-
-
 async def assistant_user_id() -> int | None:
-    """Numeric id of the streaming assistant, or None if it is unavailable.
+    """Deprecated shim — see bot.services.assistant.user_id()."""
+    from bot.services import assistant
 
-    Asks the assistant's own Pyrogram session rather than resolving a
-    username through the Bot API: a bot can only resolve a @username it has
-    already seen, and the answer is a string the Bot API will not accept
-    where a user id is required.
-    """
-    global _assistant_id
-    if _assistant_id:
-        return _assistant_id
-
-    from bot.services.stream import stream_manager
-
-    client = getattr(stream_manager, "_user_client", None)
-    if client is None:
-        return None
-    try:
-        me = await client.get_me()
-    except Exception as exc:  # not connected yet, or session revoked
-        logger.debug("Could not read the assistant's own id: %s", exc)
-        return None
-    _assistant_id = getattr(me, "id", None)
-    return _assistant_id
-
-
-def _assistant_label() -> str:
-    return f"@{config.assistant_username}" if config.assistant_username else "the assistant"
+    return await assistant.user_id()
 
 
 async def ensure_assistant_in_chat(bot: "Bot", chat_id: int) -> str | None:
-    """Check the assistant can stream here. Returns an error message or None.
+    """Deprecated shim kept for callers outside the play path.
 
-    The previous version passed "@username" as get_chat_member's user_id.
-    That argument is typed int, so the call was rejected before it left the
-    process and the bare except reported "not in group" every single time —
-    including when the assistant was sitting right there. Playback could
-    never start in any group.
+    Real logic lives in bot.services.assistant, which can also *invite* the
+    assistant instead of only reporting that it is missing.
     """
-    user_id = await assistant_user_id()
-    if user_id is None:
-        # Cannot verify. Let playback proceed and fail with a real error
-        # instead of inventing one; a wrong "add the assistant" message sends
-        # people chasing a problem they do not have.
-        logger.debug("Assistant id unavailable — skipping the membership check")
-        return None
+    from bot.services import assistant
 
-    try:
-        member = await bot.get_chat_member(chat_id, user_id)
-    except TelegramBadRequest as exc:
-        # "user not found" is Telegram's way of saying "never joined".
-        if "not found" in str(exc).lower():
-            return (
-                f"Please add {_assistant_label()} to this group so it can join "
-                "the voice chat."
-            )
-        logger.debug("Assistant membership check failed: %s", exc)
+    result = await assistant.ensure_present(bot, chat_id)
+    if result.ok:
         return None
-    except Exception as exc:
-        logger.debug("Assistant membership check failed: %s", exc)
-        return None
-
-    if member.status in ("left", "kicked"):
-        return (
-            f"Please add {_assistant_label()} to this group so it can join "
-            "the voice chat."
-        )
-    return None
+    return f"{result.title} {result.hint}".strip()
 
 
 def extract_query(message: Message) -> str | None:
