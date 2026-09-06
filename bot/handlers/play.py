@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import tempfile
@@ -184,6 +185,27 @@ async def _import_platform_link(
     return True
 
 
+async def _report_slow_search(status) -> None:
+    """Keep the status message honest while a slow extraction runs.
+
+    Cancelled as soon as the result arrives, so a fast search never sees it.
+    """
+    steps = (
+        (6, "🔎 <b>Searching…</b>"),
+        (16, "🐌 <b>Still searching</b> — the media host is slow to answer."),
+        (30, "🔁 <b>Trying another source…</b>"),
+    )
+    try:
+        previous = 0
+        for delay, text in steps:
+            await asyncio.sleep(delay - previous)
+            previous = delay
+            with contextlib.suppress(Exception):
+                await status.edit_text(text, parse_mode="HTML")
+    except asyncio.CancelledError:
+        pass
+
+
 async def _resolve_and_play(
     message: Message,
     query: str,
@@ -196,7 +218,28 @@ async def _resolve_and_play(
         return
     await clean_command(message)
     status = await message.answer("⏳ <b>Loading media…</b>", parse_mode="HTML")
+    # A frozen "Loading media…" reads as a hang. Say what is happening once
+    # the wait stops looking instant, so a slow search is visibly progress.
+    progress = asyncio.create_task(_report_slow_search(status))
+    try:
+        await _play_body(
+            message, query, status, video=video, live=live, queue_only=queue_only
+        )
+    finally:
+        progress.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await progress
 
+
+async def _play_body(
+    message: Message,
+    query: str,
+    status,
+    *,
+    video: bool = False,
+    live: bool = False,
+    queue_only: bool = False,
+) -> None:
     if not live and await _import_platform_link(
         message, query, video=video, status=status, queue_only=queue_only
     ):

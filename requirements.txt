@@ -45,6 +45,12 @@ beautifulsoup4>=4.12.0
 # were simply never generated in production.
 Pillow>=10.4.0
 
+# Browser TLS impersonation for yt-dlp. Without it yt-dlp has zero
+# impersonate targets and its TLS/HTTP2 fingerprint is unmistakably Python,
+# which is one of the signals used to block datacenter IPs. With it, requests
+# can look like Firefox or Chrome.
+curl_cffi>=0.7.0
+
 # Utilities
 requests>=2.32.0
 typing-extensions>=4.12.0

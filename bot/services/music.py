@@ -9,6 +9,8 @@ import binascii
 import logging
 import os
 import random
+from concurrent.futures import ThreadPoolExecutor
+from functools import lru_cache
 import time
 import re
 import shutil
@@ -24,8 +26,9 @@ logger = logging.getLogger(__name__)
 #: Message YouTube extraction failures are reported with, so handlers can tell
 #: "this IP is blocked" apart from "there is genuinely no such song".
 BLOCKED_HINT = (
-    "YouTube is refusing requests from this server's IP. "
-    "Set COOKIES_FILE (exported from a logged-in browser) or YTDLP_PROXY."
+    "YouTube is blocking this server's IP, and SoundCloud had no match "
+    "either. The fix is cookies: export them from a browser signed in to "
+    "YouTube and set COOKIES_DATA. A proxy (YTDLP_PROXY) also works."
 )
 
 _BLOCK_MARKERS = (
@@ -36,6 +39,9 @@ _BLOCK_MARKERS = (
     "all player responses are invalid",
     "http error 429",
     "this content isn't available",
+    # A timeout on a host that normally answers in a second is throttling in
+    # all but name — and must trigger the fallback to another backend.
+    "extraction timed out",
 )
 
 _UNSUPPORTED_MARKERS = ("unsupported url", "no video formats found", "is not a valid url")
@@ -289,6 +295,10 @@ def _ydl_common() -> dict[str, Any]:
     # Cookies from a logged-in account are the single most effective way past
     # a datacenter-IP block. These were already read from the environment but
     # only ever applied to /song downloads, never to streaming or search.
+    target = _impersonate_target()
+    if target is not None:
+        opts["impersonate"] = target
+
     cookies = pick_cookie_file()
     if cookies:
         opts["cookiefile"] = cookies
@@ -303,15 +313,77 @@ def looks_blocked(error_text: str) -> bool:
     return any(marker in low for marker in _BLOCK_MARKERS)
 
 
+#: Browser to impersonate at the TLS layer, when curl_cffi is installed.
+#:
+#: yt-dlp's default TLS/HTTP2 fingerprint is unmistakably Python, and that is
+#: one of the signals used to decide a datacenter IP is a bot. Presenting
+#: Firefox's fingerprint costs nothing and occasionally gets through where the
+#: default does not. It is not a substitute for cookies.
+_IMPERSONATE_PREFERENCES = ("firefox", "chrome", "safari")
+
+
+@lru_cache(maxsize=1)
+def _impersonate_target() -> Any:
+    """Pick an available browser target, or None when curl_cffi is missing."""
+    configured = (config.impersonate or "").strip().lower()
+    if configured in {"off", "none", "disabled"}:
+        return None
+
+    try:
+        from yt_dlp import YoutubeDL
+        from yt_dlp.networking.impersonate import ImpersonateTarget
+    except Exception:
+        return None
+
+    try:
+        with YoutubeDL({"quiet": True, "no_warnings": True}) as ydl:
+            available = [t for t, _ in ydl._get_available_impersonate_targets()]
+    except Exception as exc:
+        logger.debug("Could not enumerate impersonate targets: %s", exc)
+        return None
+
+    if not available:
+        logger.info(
+            "Browser impersonation unavailable — install curl_cffi to let "
+            "requests look like a real browser."
+        )
+        return None
+
+    if configured:
+        for target in available:
+            if configured in str(target).lower():
+                return target
+        logger.warning(
+            "IMPERSONATE=%s is not available; falling back to autodetect", configured
+        )
+
+    for wanted in _IMPERSONATE_PREFERENCES:
+        for target in available:
+            if str(target).lower().startswith(wanted):
+                return target
+    return available[0]
+
+
+def impersonate_status() -> str:
+    """One-line summary for the startup banner."""
+    target = _impersonate_target()
+    if target is None:
+        return "off (install curl_cffi)"
+    return str(target)
+
+
 YDL_OPTS_BASE: dict[str, Any] = {
     "quiet": True,
     "no_warnings": True,
     "noplaylist": True,
-    "socket_timeout": 30,
-    "retries": 3,
+    # A blocked IP fails fast and identically on every retry, so long
+    # timeouts and deep retry stacks only multiply the wait. Five clients x
+    # 3 retries x 30s was up to ten minutes of dead air before the user saw
+    # an error — and then the SoundCloud fallback started from scratch.
+    "socket_timeout": 12,
+    "retries": 1,
     "geo_bypass": True,
-    # Keep transient network hiccups from surfacing as "no results".
-    "extractor_retries": 3,
+    "extractor_retries": 1,
 }
 
 YDL_AUDIO: dict[str, Any] = {
@@ -375,8 +447,26 @@ async def _run_ytdl(opts: dict[str, Any], query: str) -> dict[str, Any] | list[d
         with yt_dlp.YoutubeDL(merged) as ydl:
             return ydl.extract_info(query, download=False)
 
+    # A hard ceiling on top of yt-dlp's own timeouts. Its retry stack is
+    # per-client, so a blocked IP can still burn a minute-plus walking through
+    # clients that all fail the same way.
+    #
+    # yt-dlp is synchronous, so the worker cannot be interrupted — abandoning
+    # it would leak a thread from the shared pool and eventually starve it.
+    # A dedicated single-use executor is used instead: cancelling detaches it
+    # and the thread dies on its own once yt-dlp's own socket timeout fires.
+    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ytdl")
+    future = loop.run_in_executor(executor, _extract)
     try:
-        result = await loop.run_in_executor(None, _extract)
+        result = await asyncio.wait_for(asyncio.shield(future), config.extract_timeout)
+    except asyncio.TimeoutError:
+        _last_error = (
+            f"Extraction timed out after {config.extract_timeout}s. "
+            "The media host is not responding — this usually means the "
+            "server's IP is being throttled or blocked."
+        )
+        logger.error("yt-dlp timed out after %ss for %r", config.extract_timeout, query)
+        return None
     except Exception as exc:
         _last_error = str(exc)
         if looks_blocked(_last_error):
@@ -391,6 +481,10 @@ async def _run_ytdl(opts: dict[str, Any], query: str) -> dict[str, Any] | list[d
         else:
             logger.error("yt-dlp extraction failed for %r: %s", query, exc)
         return None
+    finally:
+        # Never block on the worker: on timeout it is still inside yt-dlp and
+        # will exit by itself once its own socket timeout fires.
+        executor.shutdown(wait=False)
 
     _last_error = ""
     return result

@@ -178,6 +178,12 @@ class Config:
     # Directory of extra cookies*.txt jars. Rotating across several accounts
     # stops any one of them being rate-limited on its own.
     cookies_dir: str = field(default_factory=lambda: _clean(os.getenv("COOKIES_DIR")))
+    # Browser to impersonate at the TLS layer ("firefox", "chrome", "off").
+    # Blank autodetects. Requires curl_cffi.
+    impersonate: str = field(default_factory=lambda: _clean(os.getenv("IMPERSONATE")))
+    # Hard ceiling on a single yt-dlp extraction. Beyond this the user is
+    # told plainly rather than left watching "Loading media…".
+    extract_timeout: int = field(default_factory=lambda: _env_int("EXTRACT_TIMEOUT", 45))
     ytdlp_proxy: str = field(default_factory=lambda: _clean(os.getenv("YTDLP_PROXY")))
     # JS runtime for yt-dlp's YouTube challenge solver. Blank = autodetect
     # (deno, node, bun, quickjs); "none" disables. Without one, yt-dlp tries a

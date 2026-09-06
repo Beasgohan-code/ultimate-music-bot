@@ -2035,7 +2035,8 @@ def test_play_deletes_the_command_when_asked():
     source = inspect.getsource(play._resolve_and_play)
     assert "clean_command" in source
     # A failed play leaves a status message behind; it should not linger.
-    assert "schedule_cleanup" in source
+    body = inspect.getsource(play._play_body)
+    assert "schedule_cleanup" in body
 
 
 def test_platform_import_passes_queue_only_through():
@@ -2770,3 +2771,148 @@ def test_render_deploys_the_branch_with_the_fixes():
 
     text = pathlib.Path("render.yaml").read_text()
     assert "branch: main" not in text, "main lacks every fix in this branch"
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Extraction speed and browser impersonation
+#
+# Five player clients x 3 retries x a 30s socket timeout was up to ten
+# minutes of dead air before the user saw an error — and the SoundCloud
+# fallback then started from scratch.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def test_retry_budget_cannot_blow_up_again():
+    from bot.services.music import YDL_OPTS_BASE
+
+    timeout = YDL_OPTS_BASE["socket_timeout"]
+    retries = YDL_OPTS_BASE["retries"]
+    extractor_retries = YDL_OPTS_BASE["extractor_retries"]
+
+    assert timeout <= 15, f"socket_timeout {timeout}s is too patient for a block"
+    assert retries <= 1, "a blocked IP fails identically on every retry"
+    assert extractor_retries <= 1
+
+    from bot.services.music import _player_clients
+
+    worst = len(_player_clients()) * (retries + 1) * timeout
+    assert worst <= 180, f"worst case still {worst}s"
+
+
+def test_extraction_has_a_hard_deadline():
+    import inspect
+
+    from bot.services import music
+
+    source = inspect.getsource(music._run_ytdl)
+    assert "asyncio.wait_for" in source, "yt-dlp's own timeouts are per-client"
+    assert "extract_timeout" in source
+
+
+def test_timeout_message_triggers_the_fallback():
+    """A timeout is throttling in all but name, so it must reach SoundCloud."""
+    from bot.services.music import looks_blocked
+
+    assert looks_blocked("Extraction timed out after 45s. The media host…")
+    assert not looks_blocked("ERROR: no results for that query")
+
+
+def test_timeout_returns_none_quickly(monkeypatch):
+    import asyncio
+    import dataclasses
+    import time
+
+    from bot.services import music
+
+    class HangingYDL:
+        def __init__(self, opts):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def extract_info(self, query, download=False):
+            time.sleep(30)
+
+    monkeypatch.setattr(
+        music, "config", dataclasses.replace(music.config, extract_timeout=1)
+    )
+    monkeypatch.setattr(music.yt_dlp, "YoutubeDL", HangingYDL)
+
+    started = time.time()
+    result = asyncio.run(music._run_ytdl({}, "ytsearch1:anything"))
+    elapsed = time.time() - started
+
+    assert result is None
+    assert elapsed < 5, f"took {elapsed:.1f}s despite a 1s deadline"
+    assert "timed out" in music.last_error().lower()
+
+
+def test_impersonation_is_applied_when_available():
+    from bot.services.music import _impersonate_target, _ydl_common
+
+    target = _impersonate_target()
+    opts = _ydl_common()
+    if target is None:
+        assert "impersonate" not in opts
+    else:
+        assert opts["impersonate"] == target
+
+
+def test_curl_cffi_is_declared():
+    """Without it yt-dlp has zero impersonate targets."""
+    import pathlib
+
+    text = pathlib.Path("requirements.txt").read_text().lower()
+    assert "curl_cffi" in text or "curl-cffi" in text
+
+
+def test_impersonation_prefers_firefox_and_can_be_disabled(monkeypatch):
+    import dataclasses
+
+    from bot.services import music
+
+    music._impersonate_target.cache_clear()
+    monkeypatch.setattr(
+        music, "config", dataclasses.replace(music.config, impersonate="off")
+    )
+    assert music._impersonate_target() is None
+
+    music._impersonate_target.cache_clear()
+    monkeypatch.setattr(
+        music, "config", dataclasses.replace(music.config, impersonate="")
+    )
+    target = music._impersonate_target()
+    if target is not None:
+        assert "firefox" in str(target).lower(), f"preferred firefox, picked {target}"
+    music._impersonate_target.cache_clear()
+
+
+def test_slow_searches_report_progress():
+    """A frozen "Loading media…" reads as a hang."""
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from bot.handlers.play import _report_slow_search
+
+    async def quick():
+        status = AsyncMock()
+        task = asyncio.create_task(_report_slow_search(status))
+        await asyncio.sleep(0.1)
+        task.cancel()
+        return status
+
+    assert asyncio.run(quick()).edit_text.await_count == 0, "fast search stayed quiet"
+
+
+def test_progress_task_is_always_cancelled():
+    import inspect
+
+    from bot.handlers import play
+
+    source = inspect.getsource(play._resolve_and_play)
+    assert "finally:" in source
+    assert "progress.cancel()" in source, "a live task would overwrite the result"
