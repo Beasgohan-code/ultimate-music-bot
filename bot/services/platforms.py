@@ -62,7 +62,24 @@ _UNSUPPORTED = {
     "music.amazon.": "Amazon Music",
     "pandora.com": "Pandora",
     "napster.com": "Napster",
+    # ByteDance shut Resso down for good on 2024-11-28 (India went first, on
+    # 2024-01-31). Old links are still shared, and "Resso support" is still
+    # requested, so name it explicitly instead of returning "unreadable link".
+    "resso.com": "Resso",
+    "resso.app": "Resso",
 }
+
+#: Services that are gone, not merely unsupported. Worth distinguishing: no
+#: amount of work on our side will ever make these play.
+_DISCONTINUED = {
+    "Resso": "shut down by ByteDance in November 2024",
+    "Napster": "folded into Rhapsody and no longer has a public catalogue",
+}
+
+
+def discontinued_note(name: str) -> str:
+    """Explain why a dead service will never work, or "" if it is alive."""
+    return _DISCONTINUED.get(name, "")
 
 
 @dataclass(slots=True)

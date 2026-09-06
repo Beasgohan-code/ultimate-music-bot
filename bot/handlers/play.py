@@ -84,14 +84,20 @@ async def _import_platform_link(
     if not platforms.detect(query):
         blocked = platforms.unsupported_service(query)
         if blocked:
+            # A dead service is not a DRM problem, and saying so sends people
+            # hunting for a setting that would fix it. Name the real reason.
+            gone = platforms.discontinued_note(blocked)
+            hint = (
+                f"{blocked} was {gone}, so the link cannot resolve to anything. "
+                "Send the song name instead and I'll find it elsewhere."
+                if gone
+                else "Its audio is DRM-locked with no public metadata. "
+                "Paste a Spotify, Apple Music, Deezer or YouTube link, "
+                "or just send the song name."
+            )
             await send_card(
                 message,
-                error_card(
-                    f"{blocked} links can't be played.",
-                    "Its audio is DRM-locked with no public metadata. "
-                    "Paste a Spotify, Apple Music, Deezer or YouTube link, "
-                    "or just send the song name.",
-                ),
+                error_card(f"{blocked} links can't be played.", hint),
                 edit=status,
             )
             return True

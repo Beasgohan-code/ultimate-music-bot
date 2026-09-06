@@ -385,6 +385,11 @@ playlists.
 Tidal and Amazon Music expose no public metadata, so the bot says so plainly
 rather than failing with a generic error.
 
+**Resso** is handled but cannot ever work: ByteDance shut it down on
+28 November 2024 (India closed on 31 January 2024). Old links are still shared
+around, so pasting one gets an explanation of what happened and a suggestion to
+send the song name instead — not a misleading "DRM-locked" error.
+
 ## When YouTube blocks your server
 
 Cloud IPs get flagged, and then extraction fails for every query. The bot

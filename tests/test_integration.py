@@ -5490,3 +5490,18 @@ def test_uploads_land_where_the_janitor_will_find_them():
     assert "mkdtemp" not in code, "mkdtemp is outside the janitor's reach"
     assert "DOWNLOAD_DIR" in code
     assert "_safe_filename" in code, "the filename must be sanitised first"
+
+
+def test_a_dead_service_is_reported_as_dead_not_as_drm():
+    """
+    Resso shut down in November 2024. Telling someone their Resso link is
+    "DRM-locked" sends them looking for a setting that would fix it; nothing
+    will, because there is no service on the other end any more.
+    """
+    from bot.services import platforms
+
+    assert platforms.unsupported_service("https://m.resso.com/xyz") == "Resso"
+    assert "2024" in platforms.discontinued_note("Resso")
+    # Still-running services must not be labelled discontinued.
+    assert platforms.discontinued_note("Tidal") == ""
+    assert platforms.unsupported_service("https://open.spotify.com/track/x") == ""
