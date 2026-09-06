@@ -4450,3 +4450,180 @@ def test_startup_report_falls_back_to_sudo_users():
 
     source = inspect.getsource(startup.notify_owner)
     assert "sudo_users" in source, "an unset OWNER_ID should not mean silence"
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Queue persistence
+#
+# Queues were memory-only while scheduler jobs persisted. The deployment runs
+# on Render's free plan, which spins down after ~15 minutes idle, so every
+# restart silently destroyed every queue in every group.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def test_a_queue_survives_a_restart():
+    import asyncio
+
+    from bot.services import persistence
+    from bot.services.database import database
+    from bot.services.queue import LoopMode, queue_manager
+
+    async def scenario():
+        await database.connect()
+        chat_id = -880001
+        await queue_manager.reset(chat_id)
+        for n in range(3):
+            await queue_manager.add(
+                chat_id,
+                {"title": f"song {n}", "url": f"https://y/{n}", "id": f"v{n}"},
+            )
+        await queue_manager.set_loop(chat_id, LoopMode.ALL)
+        await queue_manager.set_volume(chat_id, 140)
+
+        assert await persistence.snapshot_chat(chat_id)
+
+        await queue_manager.reset(chat_id)  # the restart
+        assert await queue_manager.size(chat_id) == 0
+
+        summary = await persistence.restore_chat(chat_id)
+        titles = [t["title"] for t in await queue_manager.get_queue(chat_id)]
+        loop = (await queue_manager.get_loop(chat_id)).value
+        volume = await queue_manager.get_volume(chat_id)
+        await queue_manager.reset(chat_id)
+        return summary, titles, loop, volume
+
+    summary, titles, loop, volume = asyncio.run(scenario())
+    assert summary and summary["restored"] == 3
+    assert titles == ["song 0", "song 1", "song 2"]
+    assert loop == "all", "loop mode should survive too"
+    assert volume == 140
+
+
+def test_signed_stream_urls_are_not_persisted():
+    """A restored expiring URL fails in a way that looks like a bug."""
+    import asyncio
+
+    from bot.services import persistence
+    from bot.services.database import database
+    from bot.services.queue import queue_manager
+
+    async def scenario():
+        await database.connect()
+        chat_id = -880002
+        await queue_manager.reset(chat_id)
+        await queue_manager.add(
+            chat_id,
+            {
+                "title": "t",
+                "url": "https://y/1",
+                "stream_url": "https://signed.example/expires-soon",
+                "http_headers": {"Cookie": "secret"},
+            },
+        )
+        await persistence.snapshot_chat(chat_id)
+        doc = await database._get("queue_state", str(chat_id))
+        await persistence.forget(chat_id)
+        await queue_manager.reset(chat_id)
+        return doc
+
+    doc = asyncio.run(scenario())
+    stored_track = doc["tracks"][0]
+    assert "stream_url" not in stored_track
+    assert "http_headers" not in stored_track
+    assert stored_track["url"] == "https://y/1", "the stable url should remain"
+
+
+def test_a_stale_snapshot_is_discarded():
+    """Restoring a two-day-old queue into a room that moved on is noise."""
+    import asyncio
+    import time
+
+    from bot.services import persistence
+    from bot.services.database import database
+    from bot.services.queue import queue_manager
+
+    async def scenario():
+        await database.connect()
+        chat_id = -880003
+        await queue_manager.reset(chat_id)
+        await database._set(
+            "queue_state",
+            str(chat_id),
+            {
+                "tracks": [{"title": "ancient", "url": "u"}],
+                "current": None,
+                "loop": "off",
+                "volume": 100,
+                "saved_at": time.time() - persistence.MAX_AGE - 60,
+            },
+        )
+        summary = await persistence.restore_chat(chat_id)
+        leftover = await database._get("queue_state", str(chat_id))
+        size = await queue_manager.size(chat_id)
+        await queue_manager.reset(chat_id)
+        return summary, leftover, size
+
+    summary, leftover, size = asyncio.run(scenario())
+    assert summary is None
+    assert not leftover, "an expired snapshot should be purged, not left to rot"
+    assert size == 0
+
+
+def test_a_corrupt_snapshot_does_not_crash_the_boot():
+    """Restore runs during startup; raising there takes the whole bot down."""
+    import asyncio
+    import time
+
+    from bot.services import persistence
+    from bot.services.database import database
+    from bot.services.queue import queue_manager
+
+    async def scenario():
+        await database.connect()
+        chat_id = -880004
+        await database._set(
+            "queue_state",
+            str(chat_id),
+            {"tracks": "not-a-list", "saved_at": time.time()},
+        )
+        result = await persistence.restore_chat(chat_id)
+        await queue_manager.reset(chat_id)
+        return result
+
+    assert asyncio.run(scenario()) is None
+
+
+def test_an_empty_queue_writes_no_snapshot():
+    import asyncio
+
+    from bot.services import persistence
+    from bot.services.database import database
+    from bot.services.queue import queue_manager
+
+    async def scenario():
+        await database.connect()
+        chat_id = -880005
+        await queue_manager.reset(chat_id)
+        return await persistence.snapshot_chat(chat_id)
+
+    assert asyncio.run(scenario()) is False
+
+
+def test_startup_and_shutdown_both_touch_persistence():
+    """Wiring is the whole feature: an unused snapshotter saves nothing."""
+    import inspect
+
+    import main
+
+    source = inspect.getsource(main)
+    assert "persistence.restore_all()" in source, "nothing restores on boot"
+    assert "persistence.snapshot_all()" in source, "nothing saves on shutdown"
+    # The periodic saver matters because an OOM kill never reaches shutdown.
+    assert "_queue_saver" in source
+
+
+def test_psutil_is_declared_so_sysinfo_has_numbers():
+    """/sysinfo degrades silently without it, which hides the point of it."""
+    from pathlib import Path
+
+    assert "psutil" in Path("requirements.txt").read_text()

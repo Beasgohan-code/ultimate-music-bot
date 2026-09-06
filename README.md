@@ -236,6 +236,23 @@ writable. On Render the disk is wiped on every redeploy, so the database copy
 is the one that survives — but paste the value into the `SESSION_STRING`
 environment variable as well, or a database reset will lose it too.
 
+## Surviving restarts
+
+Queues live in memory, and the deployment runs on Render's free plan, which
+spins the service down after roughly fifteen minutes of inactivity. Every
+restart used to destroy every queue in every group, silently.
+
+Queues are now snapshotted to the database on shutdown and every five minutes
+(the timer matters: an OOM kill never reaches the shutdown handler). On boot
+they are restored and the affected groups are told.
+
+What comes back: the pending queue, the current track, loop mode and volume.
+What does not: the stream itself. A PyTgCalls session cannot be resurrected —
+the assistant has to rejoin the voice chat, which only `/play` can do — so the
+restore notice says exactly that rather than implying the music resumed.
+Snapshots older than an hour are discarded, and signed stream URLs are never
+written, since a restored one would fail like a bug rather than an expiry.
+
 ## Autoplay
 
 When the queue runs dry the bot can keep going instead of leaving. `/autoplay`

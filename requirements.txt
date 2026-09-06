@@ -44,6 +44,9 @@ beautifulsoup4>=4.12.0
 # Pillow is missing, which meant its absence here went unnoticed: image cards
 # were simply never generated in production.
 Pillow>=10.4.0
+# Host metrics for /ping and /sysinfo. Both degrade gracefully without it,
+# but the numbers are the point of those commands.
+psutil>=5.9.0
 
 # Browser TLS impersonation for yt-dlp. Without it yt-dlp has zero
 # impersonate targets and its TLS/HTTP2 fingerprint is unmistakably Python,

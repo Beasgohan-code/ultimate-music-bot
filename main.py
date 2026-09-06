@@ -57,7 +57,7 @@ from bot.handlers import (  # noqa: E402
 from bot.middlewares.enforcement import EnforcementMiddleware  # noqa: E402
 from bot.middlewares.gatekeeper import GatekeeperMiddleware  # noqa: E402
 from bot.services.autoleave import auto_leave
-from bot.services import cleanup, startup
+from bot.services import cleanup, persistence, startup
 from bot.services import errors
 from bot.services.scheduler import scheduler  # noqa: E402
 from bot.services.database import database  # noqa: E402
@@ -432,6 +432,26 @@ async def _janitor() -> None:
             logger.warning("Janitor pass failed: %s", exc)
 
 
+async def _queue_saver() -> None:
+    """Snapshot live queues on a timer.
+
+    The shutdown handler covers a clean exit, but an OOM kill or a SIGKILL
+    from the platform never reaches it — and those are exactly the restarts a
+    free-tier deployment gets. A periodic save bounds the loss to one
+    interval instead of everything.
+    """
+    from bot.services import persistence
+
+    while True:
+        try:
+            await asyncio.sleep(300)
+            await persistence.snapshot_all(timeout=8.0)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.debug("Periodic queue save failed: %s", exc)
+
+
 def _register_error_handler(dp: Dispatcher, bot: Bot) -> None:
     """Catch anything a handler throws.
 
@@ -544,6 +564,14 @@ async def main() -> None:
     ):
         dp.include_router(router)
 
+    # Bring back anything a restart interrupted. Done before the assistant
+    # connects so a group that asks immediately already has its queue.
+    try:
+        recovered = await persistence.restore_all()
+    except Exception as exc:
+        logger.warning("Could not restore saved queues: %s", exc)
+        recovered = []
+
     logger.info("Starting assistant userbot…")
     await assistant.start()
     await calls.start()
@@ -557,6 +585,7 @@ async def main() -> None:
     await scheduler.start()
 
     janitor = asyncio.create_task(_janitor())
+    queue_saver = asyncio.create_task(_queue_saver())
 
     try:
         me = await bot.get_me()
@@ -583,6 +612,35 @@ async def main() -> None:
     # confirm the bot came back — and came back *healthy* — is friction.
     await startup.notify_owner(bot, backend=backend)
 
+    # Tell the groups whose queue came back. A silent restore is nearly as
+    # confusing as a silent loss: the tracks reappear but the music does not,
+    # because a PyTgCalls stream cannot be resurrected — the assistant has to
+    # rejoin, which only /play can do.
+    if recovered:
+        from bot.services.delivery import send_safe
+        from bot.utils.rich import RichCard, b, c, plain
+
+        for summary in recovered:
+            count = summary["restored"]
+            if not count:
+                continue
+            card = (
+                RichCard()
+                .heading([plain("↩️ "), b("Queue Restored")], size=1)
+                .quote(
+                    [
+                        [c(str(count)), plain(" track(s) survived the restart.")],
+                        [plain("Send "), c("/play"), plain(" to start them — I had to leave the voice chat.")],
+                    ]
+                )
+            )
+            await send_safe(
+                lambda card=card, cid=summary["chat_id"]: bot.send_message(
+                    cid, card.to_html(), parse_mode="HTML"
+                ),
+                chat_id=summary["chat_id"],
+            )
+
     web_runner = None
     if config.web_enabled:
         try:
@@ -606,10 +664,17 @@ async def main() -> None:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
         janitor.cancel()
+        queue_saver.cancel()
         logger.info("Shutting down…")
         # Must run while the bot session is still open, and before we start
         # tearing down streams — otherwise there is nothing left to send with.
         await startup.notify_shutdown(bot)
+        # Before stopping streams: snapshot_chat reads the live queue, and
+        # tearing the streams down first would clear what we want to keep.
+        try:
+            await persistence.snapshot_all()
+        except Exception as exc:
+            logger.warning("Could not save queues on shutdown: %s", exc)
         await scheduler.stop()
         await auto_leave.stop()
         await cleanup.stop()
