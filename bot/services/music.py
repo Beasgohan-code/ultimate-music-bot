@@ -792,8 +792,23 @@ async def _try_mirrors(
         logger.debug("Mirror lookup failed for %r: %s", query, exc)
         return None
 
-    if track:
-        logger.info("Played %r through %s -- no cookies needed", query, track.get("via"))
+    if not track:
+        return None
+
+    # Give it the same shape yt-dlp produces. A mirror dict is missing
+    # is_video / is_live / requester_id, and every consumer downstream --
+    # cards, persistence, the "did you queue this?" permission check -- was
+    # written against the yt-dlp shape. Normalising here beats auditing them.
+    track.setdefault("is_video", False)
+    track.setdefault("is_live", False)
+    track.setdefault("requester", "")
+    track.setdefault("requester_id", 0)
+    if not track.get("id"):
+        track["id"] = video_id
+    if not track.get("url") and video_id:
+        track["url"] = f"https://youtube.com/watch?v={video_id}"
+
+    logger.info("Played %r through %s -- no cookies needed", query, track.get("via"))
     return track
 
 

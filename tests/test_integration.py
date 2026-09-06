@@ -5314,3 +5314,71 @@ def test_play_expands_a_short_link_before_deciding_anything():
     assert source.index("expand") < source.index("_import_platform_link"), (
         "expand first, or the importer decides on a URL nobody can read"
     )
+
+
+def test_a_mirror_track_has_the_same_shape_as_a_ytdlp_track():
+    """
+    Everything downstream -- cards, persistence, the "did you queue this?"
+    permission check -- was written against the yt-dlp dict. Piped in
+    particular returns no id and no url, so a track could reach the queue
+    with nothing to re-resolve from later.
+    """
+    import asyncio
+    from unittest.mock import AsyncMock, patch
+
+    from bot.services import mirrors, music
+
+    async def blocked(*args, **kwargs):
+        music._last_error = "Sign in to confirm you're not a bot"
+        return None
+
+    piped = mirrors._from_piped(
+        {
+            "title": "Faded",
+            "uploader": "Alan Walker",
+            "duration": 212,
+            "audioStreams": [{"bitrate": 192000, "url": "https://x/a"}],
+        },
+        "https://pipedapi.kavin.rocks",
+    )
+    assert piped["id"] == "" and piped["url"] == "", "piped really does omit these"
+
+    with patch.object(music, "_run_ytdl", blocked), patch.object(
+        music, "_search_with_fallback", blocked
+    ), patch.object(mirrors, "fetch_stream", AsyncMock(return_value=dict(piped))), patch.object(
+        mirrors, "search", AsyncMock(return_value=[{"id": "60ItHLz5WEA"}])
+    ):
+        track = asyncio.run(music.get_stream_url("alan walker faded"))
+
+    expected = {
+        "id", "title", "artist", "duration", "url", "stream_url",
+        "thumbnail", "is_live", "is_video", "requester", "requester_id", "source",
+    }
+    assert not expected - set(track), f"missing {sorted(expected - set(track))}"
+    assert track["id"] == "60ItHLz5WEA", "backfill the id from the search hit"
+    assert track["url"].endswith("60ItHLz5WEA"), "or a restart cannot re-resolve it"
+    assert track["is_video"] is False and track["requester_id"] == 0
+
+
+def test_mirror_tracks_render_in_every_card():
+    from bot.services import mirrors
+    from bot.utils import cards
+
+    track = mirrors._from_invidious(
+        {
+            "videoId": "abc12345678",
+            "title": "Faded",
+            "author": "Alan Walker",
+            "lengthSeconds": "212",
+            "videoThumbnails": [{"url": "https://t/x.jpg"}],
+            "adaptiveFormats": [
+                {"type": "audio/webm", "bitrate": "160000", "url": "https://x/vp"}
+            ],
+        },
+        "https://yewtu.be",
+    )
+    # No requester, no is_video: the cards must not KeyError on a mirror dict.
+    assert cards.now_playing_card(track, queue_len=0).to_html()
+    assert cards.queued_card(track, 2, 3).to_html()
+    assert cards.track_info_card(track).to_html()
+    assert cards.queue_card(track, [track]).to_html()
