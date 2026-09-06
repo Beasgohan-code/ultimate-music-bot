@@ -192,10 +192,14 @@ async def _report_slow_search(status) -> None:
 
     Cancelled as soon as the result arrives, so a fast search never sees it.
     """
+    # Timings track what the extractor is actually doing, so the message is
+    # never a guess: a retry begins a few seconds in, and the SoundCloud /
+    # Niconico fallbacks only start after YouTube has exhausted its attempts.
     steps = (
         (6, "🔎 <b>Searching…</b>"),
-        (16, "🐌 <b>Still searching</b> — the media host is slow to answer."),
-        (30, "🔁 <b>Trying another source…</b>"),
+        (14, "🔁 <b>Retrying</b> — the first attempt didn't get through."),
+        (26, "🎧 <b>Trying SoundCloud…</b>"),
+        (40, "📻 <b>Trying other sources…</b>"),
     )
     try:
         previous = 0

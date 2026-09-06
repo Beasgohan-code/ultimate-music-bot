@@ -108,6 +108,25 @@ def diagnose(exc: BaseException, assistant_username: str = "") -> Diagnosis:
             retryable=True,
         )
 
+    # Network failures reached here and were reported as "make sure a voice
+    # chat is running" — sending users to check something that was never the
+    # problem. Name the transport explicitly before falling back.
+    from bot.services.music import looks_blocked, looks_transient
+
+    raw = str(exc)
+    if looks_blocked(raw):
+        return Diagnosis(
+            "The media host refused this server.",
+            "This is an IP-level block, not a problem with your group. "
+            "The operator needs to set COOKIES_DATA or YTDLP_PROXY.",
+        )
+    if looks_transient(raw):
+        return Diagnosis(
+            "Couldn't reach the media host.",
+            "The network dropped the connection. This is usually temporary — try again.",
+            retryable=True,
+        )
+
     return Diagnosis(
         "Playback failed.",
         "Make sure a voice chat is running and the assistant can join it.",

@@ -184,6 +184,9 @@ class Config:
     # Hard ceiling on a single yt-dlp extraction. Beyond this the user is
     # told plainly rather than left watching "Loading media…".
     extract_timeout: int = field(default_factory=lambda: _env_int("EXTRACT_TIMEOUT", 45))
+    #: Attempts per extraction. Only transport failures are retried — a
+    #: blocked IP or a missing track fails identically every time.
+    extract_attempts: int = field(default_factory=lambda: _env_int("EXTRACT_ATTEMPTS", 2))
     ytdlp_proxy: str = field(default_factory=lambda: _clean(os.getenv("YTDLP_PROXY")))
     # JS runtime for yt-dlp's YouTube challenge solver. Blank = autodetect
     # (deno, node, bun, quickjs); "none" disables. Without one, yt-dlp tries a

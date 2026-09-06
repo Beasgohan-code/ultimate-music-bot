@@ -124,7 +124,7 @@ async def cmd_broadcast(message: Message, bot: Bot) -> None:
         .table(["Result", "Count"], [[label, c(value)] for label, value in report.as_rows()])
     )
     if report.pruned:
-        card.paragraph(
+        card.para(
             [i(f"{len(report.pruned)} unreachable chats won't be retried next time.")]
         )
     try:

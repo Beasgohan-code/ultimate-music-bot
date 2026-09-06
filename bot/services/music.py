@@ -26,9 +26,10 @@ logger = logging.getLogger(__name__)
 #: Message YouTube extraction failures are reported with, so handlers can tell
 #: "this IP is blocked" apart from "there is genuinely no such song".
 BLOCKED_HINT = (
-    "YouTube is blocking this server's IP, and SoundCloud had no match "
-    "either. The fix is cookies: export them from a browser signed in to "
-    "YouTube and set COOKIES_DATA. A proxy (YTDLP_PROXY) also works."
+    "Every source failed: YouTube is blocking this server's IP, and the "
+    "fallbacks had no match either. The fix is cookies — export them from a "
+    "browser signed in to YouTube and set COOKIES_DATA. A proxy (YTDLP_PROXY) "
+    "also works."
 )
 
 _BLOCK_MARKERS = (
@@ -45,6 +46,53 @@ _BLOCK_MARKERS = (
 )
 
 _UNSUPPORTED_MARKERS = ("unsupported url", "no video formats found", "is not a valid url")
+
+#: Transport-level failures: the request never got a usable answer out of the
+#: host. Distinct from a block (which is a deliberate refusal) and from an
+#: empty result (a real "no such song"), but it warrants the same fallback —
+#: another backend lives on different infrastructure and may well answer.
+_TRANSPORT_MARKERS = (
+    "ssl_connect",
+    "ssl_error",
+    "sslerror",
+    "connection closed",
+    "connection reset",
+    "connection refused",
+    "connection aborted",
+    "failed to perform",
+    "temporary failure in name resolution",
+    "name or service not known",
+    "timed out",
+    "timeout",
+    "unable to download api page",
+    "unable to download webpage",
+    "read operation timed out",
+    "remote end closed connection",
+    "eof occurred",
+    "network is unreachable",
+    "http error 5",
+)
+
+
+def looks_transient(error_text: str) -> bool:
+    """True when the failure is the network, not the query.
+
+    A retry — or the same query against another backend — has a real chance of
+    succeeding, unlike a genuinely missing track.
+    """
+    low = (error_text or "").lower()
+    return any(marker in low for marker in _TRANSPORT_MARKERS)
+
+
+def should_try_next_backend(error_text: str) -> bool:
+    """Whether a failure justifies asking a different service.
+
+    Only an honest *empty result* should stop the search. Both a block and a
+    transport failure mean YouTube never actually answered, and SoundCloud
+    runs on unrelated infrastructure.
+    """
+    return looks_blocked(error_text) or looks_transient(error_text)
+
 
 
 def looks_unsupported(error_text: str) -> bool:
@@ -438,7 +486,38 @@ def last_error() -> str:
     return _last_error
 
 
-async def _run_ytdl(opts: dict[str, Any], query: str) -> dict[str, Any] | list[dict[str, Any]] | None:
+async def _run_ytdl(
+    opts: dict[str, Any], query: str, *, attempts: int = 0
+) -> dict[str, Any] | list[dict[str, Any]] | None:
+    """Extract, retrying transient network failures.
+
+    A single dropped TLS handshake used to fail the whole request — the user
+    saw "playback failed" for something a second attempt would have served.
+    Only transport errors are retried: a blocked IP or a missing track fails
+    identically every time, and retrying those only adds latency.
+    """
+    tries = attempts or config.extract_attempts
+    for attempt in range(1, max(1, tries) + 1):
+        result = await _run_ytdl_once(opts, query)
+        if result is not None:
+            return result
+        if attempt >= tries or not looks_transient(_last_error):
+            return None
+        delay = min(1.5 * attempt, 4.0)
+        logger.info(
+            "Retrying %r after a transport error (attempt %d/%d in %.1fs)",
+            query,
+            attempt + 1,
+            tries,
+            delay,
+        )
+        await asyncio.sleep(delay)
+    return None
+
+
+async def _run_ytdl_once(
+    opts: dict[str, Any], query: str
+) -> dict[str, Any] | list[dict[str, Any]] | None:
     global _last_error
     loop = asyncio.get_event_loop()
     merged = {**opts, **_ydl_common()}
@@ -563,9 +642,15 @@ async def get_track(query: str, requester: str = "", video: bool = False) -> dic
 #: that can never play anything is worse than one with a smaller library. The
 #: fallbacks live on different infrastructure, so a YouTube block does not
 #: affect them.
+#: Only extractors exposing a yt-dlp ``_SEARCH_KEY`` can be used here. Of the
+#: ten that do, these are the music-bearing ones — Bandcamp, Mixcloud and
+#: Audiomack are supported for *links* but have no search key, so they can be
+#: played by URL and not searched. Niconico is last: huge catalogue, but
+#: Japanese-weighted, so it should only answer when the others cannot.
 SEARCH_BACKENDS: tuple[tuple[str, str], ...] = (
     ("ytsearch", "YouTube"),
     ("scsearch", "SoundCloud"),
+    ("nicosearch", "Niconico"),
 )
 
 
@@ -597,7 +682,10 @@ async def _search_with_fallback(
                     logger.info("Found %r on %s after YouTube failed", term, label)
                 return info
 
-        if not looks_blocked(_last_error):
+        # Only an honest empty result stops the search: a block or a network
+        # failure means YouTube never answered, and the next backend runs on
+        # unrelated infrastructure.
+        if not should_try_next_backend(_last_error):
             return None
         if index + 1 < len(backends):
             logger.warning(

@@ -2804,9 +2804,11 @@ def test_extraction_has_a_hard_deadline():
 
     from bot.services import music
 
-    source = inspect.getsource(music._run_ytdl)
+    # The deadline lives on the single attempt; _run_ytdl wraps it in retries.
+    source = inspect.getsource(music._run_ytdl_once)
     assert "asyncio.wait_for" in source, "yt-dlp's own timeouts are per-client"
     assert "extract_timeout" in source
+    assert "looks_transient" in inspect.getsource(music._run_ytdl)
 
 
 def test_timeout_message_triggers_the_fallback():
@@ -3737,3 +3739,178 @@ def test_rich_and_html_twins_agree_on_table_content():
 
     for value in flat:
         assert value in html, f"{value!r} is in the rich table but missing from the HTML twin"
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Search resilience
+#
+# A dropped TLS handshake produced "Playback failed — make sure a voice chat
+# is running", pointing users at something that was never the problem, and the
+# SoundCloud fallback never ran because looks_blocked() was False.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def test_network_errors_are_recognised_as_transient():
+    from bot.services.music import looks_transient
+
+    real_failure = (
+        'ERROR: query "faded" page 1: Unable to download API page: Failed to '
+        "perform, curl: (35) BoringSSL SSL_connect: Connection closed abruptly "
+        "(SSL_ERROR_SYSCALL; error queue empty) in connection to www.youtube.com:443"
+    )
+    assert looks_transient(real_failure)
+    assert looks_transient("Remote end closed connection without response")
+    assert looks_transient("HTTP Error 503: Service Unavailable")
+    assert not looks_transient("Video unavailable. This video is private.")
+
+
+def test_a_network_failure_still_tries_the_next_backend():
+    """The whole point of a fallback: YouTube never answered."""
+    from bot.services.music import should_try_next_backend
+
+    assert should_try_next_backend("BoringSSL SSL_connect: Connection closed abruptly")
+    assert should_try_next_backend("Sign in to confirm you're not a bot")
+    # A genuine miss must NOT be re-asked elsewhere — that returns junk.
+    assert not should_try_next_backend("No video results for that query")
+
+
+def test_search_falls_through_every_backend(monkeypatch):
+    import asyncio
+
+    from bot.services import music
+
+    tried: list[str] = []
+
+    async def fake_once(opts, query):
+        tried.append(query.split(":")[0])
+        music._last_error = "curl: (35) BoringSSL SSL_connect: Connection closed abruptly"
+        return None
+
+    monkeypatch.setattr(music, "_run_ytdl_once", fake_once)
+    result = asyncio.run(music._search_with_fallback("anything", {}, count=1))
+
+    assert result is None
+    assert any(p.startswith("ytsearch") for p in tried)
+    assert any(
+        p.startswith("scsearch") for p in tried
+    ), "SoundCloud was never tried on a network error"
+
+
+def test_transient_failures_are_retried(monkeypatch):
+    """One dropped handshake should not fail the whole request."""
+    import asyncio
+    import dataclasses
+
+    from bot.services import music
+
+    calls = {"n": 0}
+
+    async def flaky(opts, query):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            music._last_error = "Connection reset by peer"
+            return None
+        music._last_error = ""
+        return {"entries": [{"id": "ok", "title": "Recovered"}]}
+
+    monkeypatch.setattr(music, "config", dataclasses.replace(music.config, extract_attempts=2))
+    monkeypatch.setattr(music, "_run_ytdl_once", flaky)
+
+    async def no_delay(_seconds):
+        return None
+
+    monkeypatch.setattr(music.asyncio, "sleep", no_delay)
+
+    result = asyncio.run(music._run_ytdl({}, "ytsearch1:x"))
+    assert result is not None, "a transient failure should be retried"
+    assert calls["n"] == 2
+
+
+def test_permanent_failures_are_not_retried(monkeypatch):
+    """Retrying a blocked IP or a missing track only adds latency."""
+    import asyncio
+    import dataclasses
+
+    from bot.services import music
+
+    calls = {"n": 0}
+
+    async def missing(opts, query):
+        calls["n"] += 1
+        music._last_error = "Video unavailable. This video is private."
+        return None
+
+    monkeypatch.setattr(music, "config", dataclasses.replace(music.config, extract_attempts=3))
+    monkeypatch.setattr(music, "_run_ytdl_once", missing)
+
+    assert asyncio.run(music._run_ytdl({}, "ytsearch1:x")) is None
+    assert calls["n"] == 1, "a private video fails identically every time"
+
+
+def test_extra_search_backend_is_configured():
+    from bot.services.music import SEARCH_BACKENDS
+
+    prefixes = [prefix for prefix, _ in SEARCH_BACKENDS]
+    assert prefixes[:2] == ["ytsearch", "scsearch"], "YouTube first, it has the catalogue"
+    assert len(SEARCH_BACKENDS) >= 3, "one fallback is not much of a fallback"
+
+
+def test_all_backends_use_a_real_yt_dlp_search_key():
+    """A typo'd prefix fails as 'unsupported url' on every query."""
+    import yt_dlp
+
+    from bot.services.music import SEARCH_BACKENDS
+
+    keys = {
+        getattr(ie, "_SEARCH_KEY", None)
+        for ie in yt_dlp.extractor.gen_extractors()
+        if getattr(ie, "_SEARCH_KEY", None)
+    }
+    for prefix, label in SEARCH_BACKENDS:
+        assert prefix in keys, f"{label}: {prefix!r} is not a yt-dlp search key"
+
+
+def test_network_failures_are_not_blamed_on_the_voice_chat():
+    """The old catch-all sent users to check something that was fine."""
+    from bot.services.callerrors import diagnose
+
+    network = diagnose(RuntimeError("BoringSSL SSL_connect: Connection closed abruptly"))
+    assert "voice chat" not in network.hint.lower()
+    assert network.retryable
+
+    blocked = diagnose(RuntimeError("Sign in to confirm you're not a bot"))
+    assert "COOKIES_DATA" in blocked.hint
+
+    # A genuinely unknown error keeps the original generic advice.
+    unknown = diagnose(RuntimeError("something totally unexpected"))
+    assert "voice chat" in unknown.hint.lower()
+
+
+def test_richcard_methods_exist_at_every_call_site():
+    """`.paragraph()` does not exist — `.para()` does. This crashed /assistant."""
+    import ast
+    import pathlib
+
+    from bot.utils.rich import RichCard
+
+    valid = {m for m in dir(RichCard) if not m.startswith("_")}
+    problems = []
+    for path in pathlib.Path("bot").rglob("*.py"):
+        try:
+            tree = ast.parse(path.read_text())
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+                continue
+            base = node.func.value
+            while isinstance(base, ast.Call) and isinstance(base.func, ast.Attribute):
+                base = base.func.value
+            is_card = (
+                isinstance(base, ast.Call)
+                and isinstance(base.func, ast.Name)
+                and base.func.id == "RichCard"
+            ) or (isinstance(base, ast.Name) and base.id == "card")
+            if is_card and node.func.attr not in valid:
+                problems.append(f"{path}:{node.lineno} .{node.func.attr}()")
+    assert not problems, "RichCard has no such method:\n" + "\n".join(problems)

@@ -316,5 +316,5 @@ async def cmd_assistant_info(message: Message) -> None:
         .table(["Field", "Value"], rows)
     )
     if client is None:
-        card.paragraph([i("Set SESSION_STRING to enable voice chat playback.")])
+        card.para([i("Set SESSION_STRING to enable voice chat playback.")])
     await send_card(message, card)
