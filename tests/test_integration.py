@@ -4627,3 +4627,397 @@ def test_psutil_is_declared_so_sysinfo_has_numbers():
     from pathlib import Path
 
     assert "psutil" in Path("requirements.txt").read_text()
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Playback reachability
+#
+# Cookies are the one reliable fix for a datacenter-IP block, but installing
+# one used to mean setting COOKIES_DATA and redeploying — so a bot that could
+# not play stayed that way until someone had a laptop.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def _jar(live: bool = True, names=("SID", "HSID", "SSID", "LOGIN_INFO")) -> str:
+    import time
+
+    when = int(time.time()) + (86400 * 30 if live else -86400)
+    rows = "\n".join(
+        f".youtube.com\tTRUE\t/\tTRUE\t{when}\t{name}\tvalue{n}"
+        for n, name in enumerate(names)
+    )
+    return "# Netscape HTTP Cookie File\n" + rows + "\n"
+
+
+def test_every_player_client_is_real_and_usable_without_login():
+    """A typo is ignored silently, and an auth-only client cannot help us."""
+    from yt_dlp.extractor.youtube._base import INNERTUBE_CLIENTS
+
+    from bot.services.music import _EXTRA_PLAYER_CLIENTS
+
+    for name in _EXTRA_PLAYER_CLIENTS:
+        assert name in INNERTUBE_CLIENTS, f"{name!r} is not a yt-dlp client"
+        assert not INNERTUBE_CLIENTS[name].get("REQUIRE_AUTH"), (
+            f"{name!r} needs a logged-in session, which is what we lack"
+        )
+    assert len(_EXTRA_PLAYER_CLIENTS) >= 6, "one or two fallbacks is not a ladder"
+
+
+def test_cookie_status_and_pool_scan_the_same_places():
+    """They used to duplicate the walk, so /cookies showed a jar and 'none'."""
+    import inspect
+
+    from bot.services import music
+
+    assert "_cookie_dirs()" in inspect.getsource(music.cookie_pool)
+    assert "_cookie_dirs()" in inspect.getsource(music.cookie_status)
+
+
+def test_an_expired_jar_is_refused_rather_than_stored():
+    """Accepting one silently leaves playback broken behind a green tick."""
+    import asyncio
+    import shutil
+    from unittest.mock import AsyncMock, MagicMock
+    from pathlib import Path
+
+    from bot.config import config
+    from bot.handlers import cookies as handler
+    from bot.services.music import RUNTIME_COOKIE_DIR
+
+    replies: list[str] = []
+
+    async def capture(message, card, **kwargs):
+        replies.append(card.to_html())
+        return MagicMock()
+
+    original = handler.send_card
+    handler.send_card = capture
+    shutil.rmtree(RUNTIME_COOKIE_DIR, ignore_errors=True)
+    try:
+        body = _jar(live=False, names=("SID",))
+
+        message = MagicMock()
+        message.from_user.id = (config.owners or [0])[0] or 1
+        message.chat.type = "private"
+        message.document.file_name = "cookies.txt"
+        message.document.file_size = len(body)
+        message.document.file_id = "F"
+        message.delete = AsyncMock()
+
+        bot = MagicMock()
+        bot.get_file = AsyncMock(return_value=MagicMock(file_path="p"))
+
+        async def download(path, destination):
+            Path(destination).write_text(body)
+
+        bot.download_file = AsyncMock(side_effect=download)
+
+        saved_owner = handler._is_owner
+        handler._is_owner = lambda _m: True
+        try:
+            asyncio.run(handler.got_cookie_file(message, bot))
+        finally:
+            handler._is_owner = saved_owner
+
+        kept = list(RUNTIME_COOKIE_DIR.glob("*.txt")) if RUNTIME_COOKIE_DIR.is_dir() else []
+        assert replies and "no live cookies" in replies[0]
+        assert not kept, "an expired jar must not be left in the rotation"
+    finally:
+        handler.send_card = original
+        shutil.rmtree(RUNTIME_COOKIE_DIR, ignore_errors=True)
+
+
+def test_a_live_jar_is_installed_and_the_upload_deleted():
+    import asyncio
+    import shutil
+    from pathlib import Path
+    from unittest.mock import AsyncMock, MagicMock
+
+    from bot.handlers import cookies as handler
+    from bot.services.music import RUNTIME_COOKIE_DIR, cookie_pool
+
+    replies: list[str] = []
+
+    async def capture(message, card, **kwargs):
+        replies.append(card.to_html())
+        return MagicMock()
+
+    original = handler.send_card
+    handler.send_card = capture
+    shutil.rmtree(RUNTIME_COOKIE_DIR, ignore_errors=True)
+    try:
+        body = _jar(live=True)
+
+        message = MagicMock()
+        message.from_user.id = 1
+        message.chat.type = "private"
+        message.document.file_name = "cookies.txt"
+        message.document.file_size = len(body)
+        message.document.file_id = "F"
+        message.delete = AsyncMock()
+
+        bot = MagicMock()
+        bot.get_file = AsyncMock(return_value=MagicMock(file_path="p"))
+
+        async def download(path, destination):
+            Path(destination).write_text(body)
+
+        bot.download_file = AsyncMock(side_effect=download)
+
+        saved_owner = handler._is_owner
+        handler._is_owner = lambda _m: True
+        try:
+            asyncio.run(handler.got_cookie_file(message, bot))
+        finally:
+            handler._is_owner = saved_owner
+
+        assert replies and "Cookies Installed" in replies[0]
+        assert message.delete.called, "a live credential must not stay in the chat"
+        assert len(cookie_pool()) == 1, "the jar should be in rotation immediately"
+    finally:
+        handler.send_card = original
+        shutil.rmtree(RUNTIME_COOKIE_DIR, ignore_errors=True)
+
+
+def test_cookie_upload_is_owner_and_dm_only():
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock
+
+    from bot.config import config
+    from bot.handlers import cookies as handler
+
+    replies: list[str] = []
+
+    async def capture(message, card, **kwargs):
+        replies.append(card.to_html())
+        return MagicMock()
+
+    original_send = handler.send_card
+    original_owner = handler._is_owner
+    handler.send_card = capture
+    try:
+        # A stranger: the real owner check must reject them.
+        handler._is_owner = original_owner
+        stranger = MagicMock()
+        stranger.from_user.id = 999_999_999
+        stranger.chat.type = "private"
+        stranger.document.file_name = "cookies.txt"
+        stranger.document.file_size = 100
+
+        asyncio.run(handler.got_cookie_file(stranger, MagicMock()))
+        assert replies == [], "a stranger should not learn this exists"
+
+        # The owner, but in a group: refused with an explanation.
+        handler._is_owner = lambda _m: True
+        owner_in_group = MagicMock()
+        owner_in_group.chat.type = "supergroup"
+        owner_in_group.text = "/cookies"
+        asyncio.run(handler.cmd_cookies(owner_in_group))
+        assert replies and "Not here" in replies[0]
+    finally:
+        handler.send_card = original_send
+        handler._is_owner = original_owner
+
+
+def test_the_blocked_hint_does_not_hand_the_user_a_chore():
+    """
+    The old copy told listeners to go export a cookie jar and redeploy. That is
+    not a fix a person in a group chat can perform, and since mirrors landed it
+    is not even the right advice. Say what happened, and what actually helps.
+    """
+    from bot.services.music import BLOCKED_HINT
+
+    lowered = BLOCKED_HINT.lower()
+    for chore in ("cookies_data", "/cookies", "redeploy", "export"):
+        assert chore not in lowered, f"stop asking listeners to {chore}"
+    assert "try again" in lowered, "the honest advice is usually 'wait a minute'"
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Cookieless playback via public mirrors
+#
+# Cookies work but expire, leak, and demand a laptop. Invidious/Piped run the
+# extraction on their own IPs, so a block on ours does not apply.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def test_mirror_parsers_pick_the_best_audio_stream():
+    from bot.services import mirrors
+
+    invidious = {
+        "videoId": "abc12345678",
+        "title": "Faded",
+        "author": "Alan Walker",
+        "lengthSeconds": "212",
+        "videoThumbnails": [{"url": "https://t/x.jpg"}],
+        "adaptiveFormats": [
+            {"type": "audio/mp4", "bitrate": "128000", "url": "https://s/lo"},
+            {"type": "audio/webm", "bitrate": "160000", "url": "https://s/hi"},
+            {"type": "video/mp4", "bitrate": "900000", "url": "https://s/video"},
+        ],
+    }
+    track = mirrors._from_invidious(invidious)
+    assert track["stream_url"] == "https://s/hi", "should take the best AUDIO"
+    assert track["duration"] == 212
+    assert track["via"] == "invidious"
+
+    piped = {
+        "title": "Faded",
+        "uploader": "Alan Walker",
+        "duration": 212,
+        "audioStreams": [
+            {"bitrate": 128000, "url": "https://p/lo"},
+            {"bitrate": 192000, "url": "https://p/hi"},
+        ],
+    }
+    assert mirrors._from_piped(piped)["stream_url"] == "https://p/hi"
+
+
+def test_a_mirror_response_without_audio_is_a_failure():
+    """HTTP 200 with no stream is how you get 'Now Playing' over silence."""
+    from bot.services import mirrors
+
+    for junk in (
+        {},
+        "not a dict",
+        {"adaptiveFormats": None},
+        {"adaptiveFormats": [{"type": "video/mp4", "url": "u"}]},
+    ):
+        assert mirrors._from_invidious(junk) is None
+    assert mirrors._from_piped({"audioStreams": []}) is None
+
+
+def test_a_failing_instance_is_benched_but_never_all_of_them():
+    """A dead host costs a full timeout every time it is asked."""
+    from bot.services import mirrors
+
+    mirrors.reset()
+    try:
+        assert len(mirrors._healthy(mirrors.INVIDIOUS)) == len(mirrors.INVIDIOUS)
+
+        mirrors._bench(mirrors.INVIDIOUS[0], "test")
+        assert len(mirrors._healthy(mirrors.INVIDIOUS)) == len(mirrors.INVIDIOUS) - 1
+
+        # Bench everything: it must recover rather than return nothing, or a
+        # bad minute would disable mirrors permanently.
+        for instance in mirrors.INVIDIOUS:
+            mirrors._bench(instance, "test")
+        assert mirrors._healthy(mirrors.INVIDIOUS), "all-benched must reset, not fail"
+    finally:
+        mirrors.reset()
+
+
+def test_playback_falls_back_to_mirrors_when_youtube_blocks():
+    import asyncio
+    from unittest.mock import AsyncMock, patch
+
+    from bot.services import mirrors, music
+
+    async def blocked(*args, **kwargs):
+        music._last_error = "Sign in to confirm you're not a bot"
+        return None
+
+    track = {
+        "title": "Faded",
+        "stream_url": "https://mirror/audio",
+        "id": "60ItHLz5WEA",
+        "via": "invidious",
+    }
+
+    with patch.object(music, "_run_ytdl", blocked), patch.object(
+        music, "_search_with_fallback", blocked
+    ), patch.object(mirrors, "fetch_stream", AsyncMock(return_value=track)), patch.object(
+        mirrors, "search", AsyncMock(return_value=[{"id": "60ItHLz5WEA"}])
+    ):
+        result = asyncio.run(music.get_stream_url("alan walker faded"))
+
+    assert result is not None, "a blocked IP should still play through a mirror"
+    assert result["via"] == "invidious"
+
+
+def test_mirrors_are_not_used_for_a_genuine_miss():
+    """A song that does not exist is not a mirror's problem."""
+    import asyncio
+    from unittest.mock import patch
+
+    from bot.services import mirrors, music
+
+    async def empty(*args, **kwargs):
+        music._last_error = "No video results for that query"
+        return None
+
+    calls = {"n": 0}
+
+    async def spy(*args, **kwargs):
+        calls["n"] += 1
+        return None
+
+    with patch.object(music, "_run_ytdl", empty), patch.object(
+        music, "_search_with_fallback", empty
+    ), patch.object(mirrors, "search", spy), patch.object(mirrors, "fetch_stream", spy):
+        asyncio.run(music.get_stream_url("kjhaskdjhaskdjh nonexistent"))
+
+    assert calls["n"] == 0, "a real miss must not burn a mirror request"
+
+
+def test_mirrors_refuse_video_and_live():
+    """They serve audio reliably; a video/live URL would die seconds in."""
+    import asyncio
+
+    from bot.services import music
+
+    assert asyncio.run(music._try_mirrors("x", video=True)) is None
+    assert asyncio.run(music._try_mirrors("x", live=True)) is None
+
+
+def test_youtube_ids_are_extracted_from_every_url_shape():
+    from bot.services.music import _youtube_id
+
+    for url in (
+        "https://youtu.be/60ItHLz5WEA",
+        "https://youtube.com/watch?v=60ItHLz5WEA",
+        "https://youtube.com/shorts/60ItHLz5WEA",
+        "https://www.youtube.com/embed/60ItHLz5WEA",
+        "60ItHLz5WEA",
+    ):
+        assert _youtube_id(url) == "60ItHLz5WEA", url
+    assert _youtube_id("just a song name") == ""
+    assert _youtube_id("") == ""
+
+
+def test_search_falls_back_to_mirrors_too():
+    import asyncio
+    from unittest.mock import AsyncMock, patch
+
+    from bot.services import mirrors, music
+
+    async def blocked(*args, **kwargs):
+        music._last_error = "Sign in to confirm you're not a bot"
+        return None
+
+    hits = [{"title": "Faded", "id": "a", "url": "u", "via": "invidious"}]
+    with patch.object(music, "_search_with_fallback", blocked), patch.object(
+        mirrors, "search", AsyncMock(return_value=hits)
+    ):
+        results = asyncio.run(music.search_youtube("faded", limit=3))
+
+    assert results and results[0]["via"] == "invidious"
+
+
+def test_no_cookies_is_not_reported_as_a_problem():
+    """Mirrors cover it, so nagging about cookies is now just noise."""
+    import asyncio
+
+    from bot.services import startup
+
+    report = asyncio.run(startup.collect(None))
+    names = {check.name for check in report.degraded}
+    assert "Cookies" not in names, "a cookieless deployment is a working one"
+    assert any(check.name == "Mirrors" for check in report.checks)
+
+
+def test_the_blocked_hint_no_longer_demands_cookies():
+    from bot.services.music import BLOCKED_HINT
+
+    assert "COOKIES_DATA" not in BLOCKED_HINT
+    assert "mirror" in BLOCKED_HINT.lower()

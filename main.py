@@ -43,6 +43,7 @@ from bot.handlers import (  # noqa: E402
     assistant_admin,
     callbacks,
     controls,
+    cookies as cookies_handler,
     sessiongen,
     dashboard,
     extras,
@@ -551,6 +552,7 @@ async def main() -> None:
         # Before the rest: it drives an FSM in the owner's DMs, and a
         # catch-all elsewhere would swallow the code and password replies.
         sessiongen.router,
+        cookies_handler.router,
         controls.router,
         play.router,
         advanced.router,

@@ -99,14 +99,23 @@ async def collect(bot) -> Report:
     try:
         from bot.services import music
 
-        status = music.cookie_status()
         pool = len(music.cookie_pool())
         if pool:
             report.add("Cookies", OK, f"{pool} usable jar(s)")
         else:
-            report.add("Cookies", WARN, status or "none — YouTube may block this IP")
+            # Not a warning any more: mirrors cover the no-cookie case, so
+            # an empty jar list is a normal, working configuration.
+            report.add("Cookies", OK, "none — using public mirrors")
     except Exception as exc:
         report.add("Cookies", WARN, str(exc)[:60])
+
+    # ── Mirrors are what make cookieless playback work.
+    try:
+        from bot.services.mirrors import status as mirror_status
+
+        report.add("Mirrors", OK, mirror_status())
+    except Exception as exc:
+        report.add("Mirrors", WARN, str(exc)[:60])
 
     # ── Browser impersonation lowers the odds of being flagged.
     try:

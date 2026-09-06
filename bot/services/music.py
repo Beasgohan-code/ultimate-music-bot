@@ -19,17 +19,17 @@ from urllib.parse import urlparse
 
 import yt_dlp
 
-from bot.config import DATA_DIR, config
+from bot.config import CACHE_DIR, DATA_DIR, config
 
 logger = logging.getLogger(__name__)
 
 #: Message YouTube extraction failures are reported with, so handlers can tell
 #: "this IP is blocked" apart from "there is genuinely no such song".
 BLOCKED_HINT = (
-    "Every source failed: YouTube is blocking this server's IP, and the "
-    "fallbacks had no match either. The fix is cookies — export them from a "
-    "browser signed in to YouTube and set COOKIES_DATA. A proxy (YTDLP_PROXY) "
-    "also works."
+    "Every source failed — YouTube refused this server, the public mirrors "
+    "did not answer either, and the other platforms had no match. This is "
+    "usually temporary; try again in a minute. If it keeps happening the "
+    "operator can set YTDLP_PROXY."
 )
 
 _BLOCK_MARKERS = (
@@ -134,7 +134,31 @@ def _js_runtimes() -> dict[str, dict]:
 #: served by `android_vr` or `tv`. The default list is only two clients, so on
 #: a flagged IP there is very little to fall back on. Ordered cheapest-first:
 #: the ones needing no JS challenge come before the web-ish ones.
-_EXTRA_PLAYER_CLIENTS = ("android_vr", "tv", "mweb", "ios")
+#: YouTube clients to try, in order, when the default fails.
+#:
+#: Every entry must be one yt-dlp actually knows (a typo is silently ignored,
+#: so a stale name looks like it is being tried when it is not) and must not
+#: set REQUIRE_AUTH — an authenticated-only client cannot help a server with
+#: no logged-in session, which is exactly the case we are rescuing.
+#:
+#: Ordered cheapest-to-most-desperate. The TV and embedded clients are the
+#: ones that still answer a datacenter IP after the mobile ones start
+#: demanding a PO token, so they matter more than their obscurity suggests.
+#: Six, not nine. Each client costs a full socket timeout when it fails, and
+#: test_retry_budget_cannot_blow_up_again caps the worst case at 180s — a user
+#: staring at "Searching…" for four minutes has already given up. These six
+#: are the ones that still answer an unauthenticated datacenter IP; the
+#: dropped ones (tv_downgraded, web_safari, ios) duplicate a sibling's
+#: behaviour closely enough that they rarely rescue a request its sibling
+#: could not.
+_EXTRA_PLAYER_CLIENTS = (
+    "tv_simply",
+    "android_vr",
+    "tv",
+    "visionos",
+    "web_embedded",
+    "mweb",
+)
 
 
 def _player_clients() -> list[str]:
@@ -248,6 +272,23 @@ def inspect_cookies(path: str) -> dict[str, Any]:
     return info
 
 
+#: Cookie jars uploaded through /cookies land here. Kept separate from
+#: COOKIES_DIR so an operator-supplied directory is never written into, and
+#: under DATA_DIR so it lives wherever the deployment keeps its state.
+RUNTIME_COOKIE_DIR = CACHE_DIR / "cookies"
+
+
+def _cookie_dirs() -> list[str]:
+    """Directories to scan for jars: the configured one, then uploads."""
+    out: list[str] = []
+    configured = (config.cookies_dir or "").strip()
+    if configured and os.path.isdir(configured):
+        out.append(configured)
+    if RUNTIME_COOKIE_DIR.is_dir():
+        out.append(str(RUNTIME_COOKIE_DIR))
+    return out
+
+
 def cookie_pool() -> list[str]:
     """Every usable cookie jar, newest-checked first.
 
@@ -263,8 +304,7 @@ def cookie_pool() -> list[str]:
     if single:
         paths.append(single)
 
-    directory = (config.cookies_dir or "").strip()
-    if directory and os.path.isdir(directory):
+    for directory in _cookie_dirs():
         for name in sorted(os.listdir(directory)):
             if name.endswith(".txt"):
                 full = os.path.join(directory, name)
@@ -293,12 +333,14 @@ def cookie_status() -> str:
     Says plainly when a jar exists but cannot work. An expired file behaves
     exactly like no file at all, and that ambiguity costs hours to debug.
     """
+    # Scans the same directories as cookie_pool(). This used to duplicate the
+    # walk and missed the runtime upload directory, so /cookies could show a
+    # working jar and "none" in the same message.
     candidates: list[str] = []
     single = materialize_cookies()
     if single:
         candidates.append(single)
-    directory = (config.cookies_dir or "").strip()
-    if directory and os.path.isdir(directory):
+    for directory in _cookie_dirs():
         candidates += [
             os.path.join(directory, n)
             for n in sorted(os.listdir(directory))
@@ -592,6 +634,19 @@ async def search_youtube(query: str, limit: int = 10) -> list[dict[str, Any]]:
     """Search for tracks, falling back to another backend if YouTube blocks."""
     info = await _search_with_fallback(query, YDL_SEARCH, count=limit)
     if not info:
+        # Same reasoning as the play path: a mirror runs the query on its own
+        # IP. Results carry no stream URL, which is fine -- picking one goes
+        # back through get_stream_url, and that has its own mirror fallback.
+        if should_try_next_backend(_last_error):
+            try:
+                from bot.services import mirrors
+
+                found = await mirrors.search(query, limit=limit)
+                if found:
+                    logger.info("Search for %r answered by a mirror", query)
+                    return found
+            except Exception as exc:
+                logger.debug("Mirror search failed for %r: %s", query, exc)
         return []
     entries = info.get("entries", []) if isinstance(info, dict) else []
     return [_normalize_entry(e) for e in entries if e]
@@ -622,6 +677,10 @@ async def get_track(query: str, requester: str = "", video: bool = False) -> dic
     search_query = resolved if is_url(resolved) else f"ytsearch1:{resolved}"
     info = await _run_ytdl(opts, search_query)
     if not info:
+        mirrored = await _try_mirrors(resolved, video=video)
+        if mirrored:
+            mirrored["requester"] = requester
+            return mirrored
         return None
 
     if "entries" in info:
@@ -697,6 +756,59 @@ async def _search_with_fallback(
     return None
 
 
+async def _try_mirrors(
+    query: str, *, video: bool = False, live: bool = False
+) -> dict[str, Any] | None:
+    """Last-resort resolve through Invidious/Piped. Audio only.
+
+    Mirrors serve audio streams reliably and video far less so, and a live
+    stream is a manifest they do not proxy at all -- claiming otherwise would
+    hand PyTgCalls a URL that dies seconds in.
+    """
+    if video or live:
+        return None
+    if not should_try_next_backend(_last_error):
+        return None  # a genuine "no such song" is not a mirror's problem
+
+    try:
+        from bot.services import mirrors
+    except Exception:
+        return None
+
+    try:
+        video_id = _youtube_id(query)
+        if not video_id:
+            found = await mirrors.search(query, limit=1)
+            if not found:
+                return None
+            video_id = found[0].get("id") or ""
+        if not video_id:
+            return None
+        track = await mirrors.fetch_stream(video_id)
+    except Exception as exc:
+        logger.debug("Mirror lookup failed for %r: %s", query, exc)
+        return None
+
+    if track:
+        logger.info("Played %r through %s -- no cookies needed", query, track.get("via"))
+    return track
+
+
+def _youtube_id(value: str) -> str:
+    """Extract a video id from a URL, or "" when it is a search term."""
+    if not value:
+        return ""
+    match = re.search(
+        r"(?:v=|youtu\.be/|/shorts/|/embed/)([A-Za-z0-9_-]{11})", value
+    )
+    if match:
+        return match.group(1)
+    bare = value.strip()
+    if len(bare) == 11 and re.fullmatch(r"[A-Za-z0-9_-]{11}", bare):
+        return bare
+    return ""
+
+
 async def get_stream_url(query: str, video: bool = False, live: bool = False) -> dict[str, Any] | None:
     resolved = await resolve_query(query)
     if live:
@@ -717,6 +829,12 @@ async def get_stream_url(query: str, video: bool = False, live: bool = False) ->
             else await _search_with_fallback(resolved, opts)
         )
     if not info:
+        # yt-dlp could not get through. Public YouTube front-ends run the
+        # extraction on their own IPs, so a block on ours does not apply --
+        # and unlike cookies they need no credential that can expire or leak.
+        mirrored = await _try_mirrors(resolved, video=video, live=live)
+        if mirrored:
+            return mirrored
         return None
 
     if "entries" in info:
