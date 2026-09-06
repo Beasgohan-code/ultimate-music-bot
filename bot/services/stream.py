@@ -20,6 +20,10 @@ from bot.services.queue import queue_manager
 
 logger = logging.getLogger(__name__)
 
+#: How many consecutive unplayable tracks to skip before giving up. Without a
+#: cap, a queue of dead links would spin through every entry on each failure.
+MAX_AUTOSKIP = 5
+
 AUDIO_QUALITY_MAP = {
     "studio": AudioQuality.STUDIO,
     "high": AudioQuality.HIGH,
@@ -48,6 +52,7 @@ class StreamManager:
         self._offset: dict[int, int] = {}
         self._on_track_end_callbacks: list[Callable] = []
         self._on_queue_empty_callbacks: list[Callable] = []
+        self._on_autoskip_callbacks: list[Callable] = []
 
     # ── lifecycle ───────────────────────────────────────────────────────
     def setup(self, user_client) -> PyTgCalls:
@@ -74,14 +79,36 @@ class StreamManager:
     async def _handle_end(self, chat_id: int) -> None:
         self._playing[chat_id] = False
         self._paused[chat_id] = False
-        next_track = await queue_manager.next_track(chat_id)
-        if next_track:
+
+        # One unplayable track used to kill the whole queue: the first failure
+        # stopped the stream outright, so a single dead link or geo-blocked
+        # video ended the session. Skip past failures instead, with a cap so a
+        # queue full of broken links can't spin.
+        next_track = None
+        skipped: list[str] = []
+        for _ in range(MAX_AUTOSKIP):
+            candidate = await queue_manager.next_track(chat_id)
+            if not candidate:
+                break
             try:
-                await self.play(chat_id, next_track)
+                await self.play(chat_id, candidate)
+                next_track = candidate
+                break
             except Exception as exc:
-                logger.error("Auto-advance failed in %s: %s", chat_id, exc)
-                await self.stop(chat_id)
-                return
+                title = candidate.get("title", "unknown")
+                skipped.append(title)
+                logger.warning(
+                    "Auto-advance skipped %r in %s: %s", title, chat_id, exc
+                )
+
+        if skipped:
+            for cb in self._on_autoskip_callbacks:
+                try:
+                    await cb(chat_id, skipped)
+                except Exception as exc:
+                    logger.error("Auto-skip callback error: %s", exc)
+
+        if next_track:
             for cb in self._on_track_end_callbacks:
                 try:
                     await cb(chat_id, next_track)
@@ -255,6 +282,10 @@ class StreamManager:
 
     def on_queue_empty(self, callback: Callable) -> None:
         self._on_queue_empty_callbacks.append(callback)
+
+    def on_autoskip(self, callback: Callable) -> None:
+        """Notified with (chat_id, [titles]) when tracks were skipped as unplayable."""
+        self._on_autoskip_callbacks.append(callback)
 
 
 stream_manager = StreamManager()

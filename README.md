@@ -210,6 +210,20 @@ to your password and they do not need your 2FA. If you have posted them
 anywhere, sign out of that Google account on all devices immediately, which
 invalidates them.
 
+## Startup reports
+
+On boot the bot DMs `OWNER_ID` a readiness report: its identity, plus a health
+table covering the assistant, ffmpeg, cookies, impersonation, storage and
+thumbnails. Anything degraded is named with its reason, so a boot that looks
+fine but cannot actually play is visible immediately.
+
+It also sends a short notice on shutdown with the uptime — a restart loop is
+invisible otherwise, since the boot message looks identical whether the bot ran
+for a month or thirty seconds.
+
+If the DM never arrives, open a chat with the bot from the owner account and
+send `/start`: Telegram blocks bots from messaging users first.
+
 ## Operating the bot
 
 **Unhandled errors.** Most handlers deliberately have no `try/except`; a single
@@ -354,6 +368,7 @@ bot/
   services/              stream (PyTgCalls) · queue · database · moderation
                          i18n · lyrics · history · stats · autoleave
                          delivery (rate limits, retries, dead-chat pruning)
+                         startup (boot readiness report to the owner)
   middlewares/           gatekeeper (bans, throttle, disabled cmds) · enforcement
   utils/                 rich (card builder) · cards · guards · formatters
   keyboards/             inline player, settings, help, moderation

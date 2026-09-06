@@ -723,3 +723,74 @@ async def on_video_chat_ended(message: Message) -> None:
         await stream_manager.stop(chat_id)
     except Exception as exc:
         logger.debug("Stream stop after video chat ended failed: %s", exc)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stream lifecycle announcements
+#
+# PyTgCalls advances the queue on its own when a track ends, but nothing told
+# the group about it — the music simply changed with no message. FallenMusic's
+# watcher.py posted a "started streaming" card on every auto-advance; these
+# callbacks do the same, plus report tracks that were skipped as unplayable.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def register_stream_notifications(bot: Bot) -> None:
+    """Attach queue-advance announcements. Called once at startup."""
+    from bot.services.database import database
+
+
+    async def announce_next(chat_id: int, track: dict) -> None:
+        if not await database.get_chat_value(chat_id, "announce_tracks", True):
+            return
+        try:
+            card = now_playing_card(
+                track,
+                elapsed=0,
+                queue_len=await queue_manager.size(chat_id),
+                volume=await queue_manager.get_volume(chat_id),
+                loop_mode=(await queue_manager.get_loop(chat_id)).value,
+            )
+            await bot.send_message(
+                chat_id,
+                card.to_html(),
+                parse_mode="HTML",
+                reply_markup=player_panel_kb(True),
+            )
+        except Exception as exc:
+            # A chat that removed the bot must not break the stream loop.
+            logger.debug("Could not announce next track in %s: %s", chat_id, exc)
+
+    async def announce_skipped(chat_id: int, titles: list[str]) -> None:
+        try:
+            listed = ", ".join(t[:40] for t in titles[:3])
+            if len(titles) > 3:
+                listed += f" and {len(titles) - 3} more"
+            await bot.send_message(
+                chat_id,
+                error_card(
+                    f"Skipped {len(titles)} unplayable track(s).",
+                    f"{listed} — the source may be private, deleted or region-locked.",
+                ).to_html(),
+                parse_mode="HTML",
+            )
+        except Exception as exc:
+            logger.debug("Could not report skipped tracks in %s: %s", chat_id, exc)
+
+    async def announce_empty(chat_id: int) -> None:
+        if not await database.get_chat_value(chat_id, "announce_tracks", True):
+            return
+        try:
+            await bot.send_message(
+                chat_id,
+                action_card(
+                    "ended", note="Queue finished — leaving the voice chat."
+                ).to_html(),
+                parse_mode="HTML",
+            )
+        except Exception as exc:
+            logger.debug("Could not announce queue end in %s: %s", chat_id, exc)
+
+    stream_manager.on_track_end(announce_next)
+    stream_manager.on_autoskip(announce_skipped)
+    stream_manager.on_queue_empty(announce_empty)

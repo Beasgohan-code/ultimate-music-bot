@@ -56,7 +56,7 @@ from bot.handlers import (  # noqa: E402
 from bot.middlewares.enforcement import EnforcementMiddleware  # noqa: E402
 from bot.middlewares.gatekeeper import GatekeeperMiddleware  # noqa: E402
 from bot.services.autoleave import auto_leave
-from bot.services import cleanup
+from bot.services import cleanup, startup
 from bot.services import errors
 from bot.services.scheduler import scheduler  # noqa: E402
 from bot.services.database import database  # noqa: E402
@@ -543,6 +543,10 @@ async def main() -> None:
     await calls.start()
     await auto_leave.start()
 
+    # Announce queue advances: PyTgCalls changes track on its own, and until
+    # now the group was told nothing when it did.
+    play.register_stream_notifications(bot)
+
     scheduler.set_runner(_make_schedule_runner(bot))
     await scheduler.start()
 
@@ -568,6 +572,11 @@ async def main() -> None:
         except Exception as exc:
             logger.warning("Could not post to the log group: %s", exc)
 
+    # DM the owner a readiness report. Deliberately after the log-group post
+    # and never fatal: a PaaS restarts silently, and reading a log stream to
+    # confirm the bot came back — and came back *healthy* — is friction.
+    await startup.notify_owner(bot, backend=backend)
+
     web_runner = None
     if config.web_enabled:
         try:
@@ -592,6 +601,9 @@ async def main() -> None:
     finally:
         janitor.cancel()
         logger.info("Shutting down…")
+        # Must run while the bot session is still open, and before we start
+        # tearing down streams — otherwise there is nothing left to send with.
+        await startup.notify_shutdown(bot)
         await scheduler.stop()
         await auto_leave.stop()
         await cleanup.stop()

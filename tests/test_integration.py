@@ -3416,3 +3416,209 @@ def test_stream_started_card_marks_live_tracks():
     normal = stream_started_card({"title": "Song", "duration": 200}).to_html()
     assert "Live stream" not in normal
     assert "3:20" in normal
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Startup / shutdown reports
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def test_startup_report_probes_every_subsystem():
+    import asyncio
+
+    from bot.services import startup
+
+    report = asyncio.run(startup.collect(None))
+    names = {check.name for check in report.checks}
+    for expected in ("Assistant", "ffmpeg", "Cookies", "Storage", "Thumbnails"):
+        assert expected in names, f"{expected} is not covered by the boot report"
+
+
+def test_startup_report_flags_a_missing_assistant():
+    """A boot that looks fine but cannot play is the failure worth catching."""
+    import asyncio
+
+    from bot.services import assistant as assistant_service
+    from bot.services import startup
+
+    # Other tests install a fake assistant id; start from a clean slate.
+    assistant_service.reset()
+    report = asyncio.run(startup.collect(None))
+    assistant_service.reset()
+
+    assistant = next(c for c in report.checks if c.name == "Assistant")
+    assert not assistant.healthy, "no SESSION_STRING configured in tests"
+    assert assistant in report.degraded
+
+
+def test_startup_card_names_what_is_broken():
+    from types import SimpleNamespace
+
+    from bot.services.startup import DEAD, OK, Check, Report, build_card
+
+    report = Report(checks=[Check("ffmpeg", DEAD, "not installed"), Check("Storage", OK, "json")])
+    me = SimpleNamespace(id=1, username="testbot", first_name="Test")
+    html = build_card(me, report).to_html()
+
+    assert "Needs attention" in html
+    assert "ffmpeg" in html
+    assert "not installed" in html, "the operator needs the reason, not just a red dot"
+
+
+def test_startup_card_is_clean_when_healthy():
+    from types import SimpleNamespace
+
+    from bot.services.startup import OK, Check, Report, build_card
+
+    report = Report(checks=[Check("Storage", OK, "json")])
+    me = SimpleNamespace(id=1, username="testbot", first_name="Test")
+    html = build_card(me, report).to_html()
+
+    assert "nominal" in html.lower()
+    assert "Needs attention" not in html
+
+
+def test_owner_dm_is_skipped_without_an_owner_id(monkeypatch):
+    import asyncio
+    import dataclasses
+
+    from bot.services import startup
+
+    monkeypatch.setattr(startup, "config", dataclasses.replace(startup.config, owner_id=0))
+    assert asyncio.run(startup.notify_owner(None)) is False
+
+
+def test_startup_notification_never_breaks_the_boot(monkeypatch):
+    """A failed report must not stop the bot from starting."""
+    import asyncio
+    import dataclasses
+
+    from bot.services import startup
+
+    monkeypatch.setattr(startup, "config", dataclasses.replace(startup.config, owner_id=123))
+
+    class ExplodingBot:
+        async def get_me(self):
+            raise RuntimeError("Telegram is down")
+
+    assert asyncio.run(startup.notify_owner(ExplodingBot())) is False
+
+
+def test_main_sends_the_startup_dm_and_shutdown_notice():
+    import pathlib
+
+    source = pathlib.Path("main.py").read_text()
+    assert "startup.notify_owner" in source
+    assert "startup.notify_shutdown" in source
+
+    # The shutdown DM must be sent before the session closes.
+    assert source.index("startup.notify_shutdown") < source.index("await bot.session.close()")
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Player resilience
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def test_one_dead_track_does_not_kill_the_queue():
+    """Previously the first failed track stopped the whole session."""
+    import asyncio
+    from unittest.mock import AsyncMock, patch
+
+    from bot.services.stream import StreamManager
+
+    queued = [{"title": "dead-1"}, {"title": "dead-2"}, {"title": "good"}]
+    cursor = {"i": 0}
+
+    async def next_track(chat_id):
+        if cursor["i"] < len(queued):
+            track = queued[cursor["i"]]
+            cursor["i"] += 1
+            return track
+        return None
+
+    async def play(chat_id, track):
+        if track["title"].startswith("dead"):
+            raise RuntimeError("Video unavailable")
+
+    manager = StreamManager()
+    manager.play = play
+    manager.stop = AsyncMock()
+
+    seen: dict = {}
+
+    async def on_skip(chat_id, titles):
+        seen["skipped"] = titles
+
+    async def on_next(chat_id, track):
+        seen["playing"] = track["title"]
+
+    manager.on_autoskip(on_skip)
+    manager.on_track_end(on_next)
+
+    async def run():
+        with patch("bot.services.stream.queue_manager") as qm:
+            qm.next_track = next_track
+            await manager._handle_end(-100)
+
+    asyncio.run(run())
+
+    assert seen.get("playing") == "good", "the queue should survive dead links"
+    assert seen.get("skipped") == ["dead-1", "dead-2"]
+
+
+def test_autoskip_is_capped():
+    """A queue full of dead links must not spin forever."""
+    import asyncio
+    from unittest.mock import AsyncMock, patch
+
+    from bot.services.stream import MAX_AUTOSKIP, StreamManager
+
+    attempts = {"n": 0}
+
+    async def next_track(chat_id):
+        return {"title": f"dead-{attempts['n']}"}
+
+    async def play(chat_id, track):
+        attempts["n"] += 1
+        raise RuntimeError("Video unavailable")
+
+    manager = StreamManager()
+    manager.play = play
+    manager.stop = AsyncMock()
+
+    async def run():
+        with patch("bot.services.stream.queue_manager") as qm:
+            qm.next_track = next_track
+            await manager._handle_end(-100)
+
+    asyncio.run(run())
+    assert attempts["n"] == MAX_AUTOSKIP
+    manager.stop.assert_awaited()
+
+
+def test_queue_advances_are_announced():
+    """PyTgCalls changes track silently; the group should be told."""
+    import inspect
+
+    from bot.handlers import play
+
+    source = inspect.getsource(play.register_stream_notifications)
+    assert "on_track_end" in source
+    assert "on_autoskip" in source
+    assert "on_queue_empty" in source
+
+
+def test_stream_notifications_are_registered_at_startup():
+    import pathlib
+
+    assert "register_stream_notifications" in pathlib.Path("main.py").read_text()
+
+
+def test_announcements_can_be_muted_per_chat():
+    import inspect
+
+    from bot.handlers import play
+
+    source = inspect.getsource(play.register_stream_notifications)
+    assert "announce_tracks" in source, "busy groups need a way to silence these"

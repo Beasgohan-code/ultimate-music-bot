@@ -502,6 +502,7 @@ async def cb_settings_music(query: CallbackQuery, bot: Bot) -> None:
     doc = await database.get_chat(chat_id)
     play_admins = bool(doc.get("play_admins_only", config.admins_only))
     ctrl_admins = bool(doc.get("control_admins_only", True))
+    announce = bool(doc.get("announce_tracks", True))
     card = (
         RichCard()
         .heading([_icon("🎵"), b("Music Settings")], size=1)
@@ -513,6 +514,7 @@ async def cb_settings_music(query: CallbackQuery, bot: Bot) -> None:
                 ["Who can play", c("admins" if play_admins else "everyone")],
                 ["Who can control", c("admins" if ctrl_admins else "everyone")],
                 ["Duration limit", c(f"{config.duration_limit_min} min")],
+                ["Announce tracks", c("on" if announce else "off")],
             ],
         )
         .footer("Authorised users (/auth) bypass the admin restriction.")
@@ -524,6 +526,7 @@ async def cb_settings_music(query: CallbackQuery, bot: Bot) -> None:
             [
                 ("Play: admins only", "gsm:toggle:play_admins_only", play_admins),
                 ("Controls: admins only", "gsm:toggle:control_admins_only", ctrl_admins),
+                ("Announce each track", "gsm:toggle:announce_tracks", announce),
             ]
         ),
     )
@@ -534,6 +537,7 @@ async def cb_music_toggle(query: CallbackQuery, bot: Bot) -> None:
     if not await _guard_cb(query, bot):
         return
     key = query.data.split(":")[-1]
+    # play_admins_only follows the global default; every other toggle is on.
     default = config.admins_only if key == "play_admins_only" else True
     current = bool(await database.get_chat_value(query.message.chat.id, key, default))
     await database.set_chat_value(query.message.chat.id, key, not current)
