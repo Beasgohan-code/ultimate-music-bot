@@ -12,7 +12,7 @@ from bot.services.favorites import favorites_store
 from bot.services.music import get_stream_url
 from bot.services.queue import queue_manager
 from bot.services.stream import stream_manager
-from bot.utils.cards import error_card, now_playing_card, queue_card
+from bot.utils.cards import action_card, error_card, now_playing_card, queue_card
 from bot.utils.rich import send_card
 from bot.utils.helpers import get_cached_track
 
@@ -535,7 +535,9 @@ async def cb_settings_volume(query: CallbackQuery) -> None:
 async def cb_settings_loop(query: CallbackQuery) -> None:
     mode = await queue_manager.toggle_loop(query.message.chat.id)
     await query.answer(f"🔁 Loop: {mode.value}")
-    await query.message.answer(f"🔁 Loop mode: <b>{mode.value.title()}</b>", parse_mode="HTML")
+    await send_card(
+        query.message, action_card("looped", detail=mode.value.title())
+    )
 
 
 @router.callback_query(F.data == "settings:autoleave")

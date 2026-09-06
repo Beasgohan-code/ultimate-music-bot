@@ -106,10 +106,15 @@ def now_playing_card(
 
     card.blank()
 
+    # Playback state sits inside a blockquote: Telegram indents and tints it,
+    # which separates "what is happening now" from the title above without
+    # needing a divider or a table's borders.
+    quoted: list[Any] = []
+
     # The seek bar and timecode belong together, on one line, monospaced so
     # the digits do not jitter as the position updates.
     if not is_live:
-        card.para(
+        quoted.append(
             [
                 c(fmt_duration(elapsed)),
                 plain("  "),
@@ -119,7 +124,7 @@ def now_playing_card(
             ]
         )
     else:
-        card.para([plain("🔴  "), b("LIVE"), plain("  ── streaming now")])
+        quoted.append([plain("🔴  "), b("LIVE"), plain("  ── streaming now")])
 
     # A compact status strip reads better than a six-row table for values
     # that are mostly one word each.
@@ -130,7 +135,7 @@ def now_playing_card(
         strip += [plain("   🔁 "), c(loop_mode)]
     if queue_len:
         strip += [plain("   📋 "), c(str(queue_len))]
-    card.para(strip)
+    quoted.append(strip)
 
     if track.get("requester") or position:
         line: list[Any] = []
@@ -140,7 +145,9 @@ def now_playing_card(
             if line:
                 line.append(plain("   "))
             line += [plain("📍 #"), c(str(position))]
-        card.para(line)
+        quoted.append(line)
+
+    card.quote(quoted)
 
     card.footer(f"{source_badge(track.get('source') or 'youtube')}  •  {config.bot_name}")
     return card
@@ -156,7 +163,7 @@ def queued_card(track: dict[str, Any], position: int, queue_len: int) -> RichCar
         card.para([i(_clip(track["artist"], 60))])
 
     card.blank()
-    card.para(
+    quoted: list[Any] = [
         [
             plain("📍 Position "),
             c(f"#{position}"),
@@ -165,9 +172,10 @@ def queued_card(track: dict[str, Any], position: int, queue_len: int) -> RichCar
             plain("   📋 "),
             c(f"{queue_len} in queue"),
         ]
-    )
+    ]
     if track.get("requester"):
-        card.para([plain("🙋 "), plain(_clip(track["requester"], 32))])
+        quoted.append([plain("🙋 "), plain(_clip(track["requester"], 32))])
+    card.quote(quoted)
 
     card.footer(f"{source_badge(track.get('source') or 'youtube')}  •  /queue to see it all")
     return card
@@ -371,8 +379,10 @@ def error_card(message: str, hint: str = "") -> RichCard:
     second carried information. The message *is* the headline.
     """
     card = RichCard().para([plain("⚠️ "), b(message)])
+    # The hint is the actionable half — quoting it stops it reading as an
+    # afterthought trailing the error.
     if hint:
-        card.para([i(hint)])
+        card.quote([[i(hint)]])
     return card
 
 
@@ -380,7 +390,7 @@ def success_card(message: str, hint: str = "") -> RichCard:
     """Confirmation, without a redundant "Done" banner above it."""
     card = RichCard().para([plain("✅ "), b(message)])
     if hint:
-        card.para([i(hint)])
+        card.quote([[i(hint)]])
     return card
 
 
@@ -611,10 +621,15 @@ def action_card(
         label = f"{label} — {detail}"
 
     card = RichCard().heading([_icon(icon), b(label)], size=1)
+    # Attribution and note are secondary to the action itself, so they sit in
+    # a quote block rather than competing with the heading.
+    quoted: list[Any] = []
     if by:
-        card.para([plain("by "), b(_clip(by, 48))])
+        quoted.append([plain("by "), b(_clip(by, 48))])
     if note:
-        card.para([i(note)])
+        quoted.append([i(note)])
+    if quoted:
+        card.quote(quoted)
     return card
 
 
@@ -635,5 +650,5 @@ def stream_started_card(track: dict[str, Any], *, video: bool = False) -> RichCa
         .table(["Detail", "Value"], rows)
     )
     if track.get("is_live"):
-        card.para([i("Live stream — it plays until the source stops.")])
+        card.quote([[i("Live stream — it plays until the source stops.")]])
     return card

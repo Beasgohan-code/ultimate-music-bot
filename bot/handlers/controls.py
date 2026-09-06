@@ -409,7 +409,13 @@ async def cmd_playplaylist(message: Message, bot: Bot) -> None:
     first = tracks[0]
     resolved = await get_stream_url(first.get("url") or first.get("title", ""))
     if not resolved:
-        await status.edit_text("❌ <b>Could not load the first track.</b>", parse_mode="HTML")
+        await status.edit_text(
+            error_card(
+                "Could not load the first track.",
+                "The source may be private, deleted or region-locked.",
+            ).to_html(),
+            parse_mode="HTML",
+        )
         return
 
     await play_track(message, resolved, edit_msg=status)

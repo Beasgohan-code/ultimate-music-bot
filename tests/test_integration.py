@@ -3914,3 +3914,129 @@ def test_richcard_methods_exist_at_every_call_site():
             if is_card and node.func.attr not in valid:
                 problems.append(f"{path}:{node.lineno} .{node.func.attr}()")
     assert not problems, "RichCard has no such method:\n" + "\n".join(problems)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# UI consistency
+#
+# The cards were structurally correct but visually flat: 92 .para() calls
+# against 9 .quote(), so everything rendered as undifferentiated lines.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def _sample_track():
+    return {
+        "title": "Alan Walker - Faded",
+        "duration": 212,
+        "artist": "Alan Walker",
+        "requester": "Rahul",
+        "requester_id": 7,
+        "url": "https://youtu.be/60ItHLz5WEA",
+        "id": "60ItHLz5WEA",
+        "source": "youtube",
+    }
+
+
+def test_core_cards_use_blockquotes():
+    """Grouped metadata should be visually set apart, not another flat line."""
+    from bot.utils.cards import action_card, error_card, now_playing_card, queued_card
+
+    track = _sample_track()
+    for name, card in [
+        ("now_playing", now_playing_card(track, elapsed=45, queue_len=3)),
+        ("queued", queued_card(track, 2, 5)),
+        ("action", action_card("paused", "Rahul")),
+        ("error", error_card("Playback failed.", "Start a voice chat first.")),
+    ]:
+        assert "<blockquote>" in card.to_html(), f"{name} still renders flat"
+
+
+def test_blockquotes_survive_into_the_rich_payload():
+    """The HTML twin having a quote proves nothing about what Telegram gets."""
+    from aiogram.types import InputRichBlockBlockQuotation
+
+    from bot.utils.cards import now_playing_card
+
+    message = now_playing_card(_sample_track(), elapsed=45).to_rich_message()
+    quotes = [b for b in message.blocks if isinstance(b, InputRichBlockBlockQuotation)]
+    assert quotes, "no blockquote block reached the rich payload"
+    assert all(q.blocks for q in quotes), "blockquote shipped with no content"
+
+
+def test_no_card_block_is_silently_empty():
+    """A block with neither text nor children draws an empty gap."""
+    from bot.utils.cards import (
+        action_card,
+        error_card,
+        now_playing_card,
+        queued_card,
+        stream_started_card,
+        success_card,
+    )
+
+    track = _sample_track()
+    cards = {
+        "now_playing": now_playing_card(track, elapsed=45),
+        "queued": queued_card(track, 1, 1),
+        "stream_started": stream_started_card(track),
+        "action": action_card("shuffled", "Rahul", note="3 tracks reordered."),
+        "error": error_card("Nope.", "Try again."),
+        "success": success_card("Done.", "All good."),
+    }
+    for name, card in cards.items():
+        for block in card.to_rich_message().blocks:
+            kind = type(block).__name__
+            if kind in {"InputRichBlockDivider", "InputRichBlockBlank"}:
+                continue
+            body = getattr(block, "text", None) or getattr(block, "blocks", None)
+            if kind == "InputRichBlockTable":
+                body = getattr(block, "cells", None)
+            assert body, f"{name}: {kind} is empty"
+
+
+def test_terminal_replies_go_through_a_card(monkeypatch):
+    """Spinners may be plain strings; the message a user is left with may not.
+
+    /shuffle, /clear, /volume and /info each hand-built HTML, so they were the
+    handlers the card styling never reached.
+    """
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock
+
+    from bot.handlers import misc, play
+    from bot.services.queue import queue_manager
+
+    sent: list[str] = []
+
+    async def capture(message, card, **kwargs):
+        sent.append(card.to_html())
+        return MagicMock()
+
+    monkeypatch.setattr(play, "send_card", capture)
+    monkeypatch.setattr(misc, "send_card", capture)
+
+    def fake_message(text: str):
+        message = MagicMock()
+        message.chat.id = -100999
+        message.from_user.full_name = "Rahul"
+        message.from_user.id = 7
+        message.text = text
+        message.answer = AsyncMock()
+        return message
+
+    async def exercise():
+        chat_id = -100999
+        track = _sample_track()
+        await queue_manager.add(chat_id, dict(track))
+        await queue_manager.set_current(chat_id, dict(track))
+
+        await play.cmd_shuffle(fake_message("/shuffle"))
+        await play.cmd_clear(fake_message("/clear"))
+        await play.cmd_volume(fake_message("/volume"))
+        await misc.cmd_info(fake_message("/info"))
+
+    asyncio.run(exercise())
+
+    assert len(sent) == 4, "a handler replied without going through send_card"
+    for html in sent:
+        assert "<b>" in html, "card rendered with no formatting at all"

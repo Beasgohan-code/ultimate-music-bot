@@ -33,7 +33,9 @@ from bot.utils.cards import (
     action_card,
     error_card,
     import_card,
+    meter,
     now_playing_card,
+    queued_card,
     search_card,
     success_card,
     voteskip_card,
@@ -639,13 +641,24 @@ async def cmd_now(message: Message) -> None:
 @router.message(Command("shuffle"))
 async def cmd_shuffle(message: Message) -> None:
     await queue_manager.shuffle(message.chat.id)
-    await message.answer("🔀 <b>Queue shuffled!</b>", parse_mode="HTML")
+    depth = len(await queue_manager.get_queue(message.chat.id))
+    await send_card(
+        message,
+        action_card(
+            "shuffled",
+            _actor(message),
+            note=f"{depth} track(s) reordered." if depth else "",
+        ),
+    )
 
 
 @router.message(Command("clear"))
 async def cmd_clear(message: Message) -> None:
     count = await queue_manager.clear(message.chat.id)
-    await message.answer(f"🗑 Cleared <b>{count}</b> track(s) from queue.", parse_mode="HTML")
+    await send_card(
+        message,
+        action_card("cleared", _actor(message), detail=f"{count} track(s)"),
+    )
 
 
 @router.message(Command("volume"))
@@ -654,7 +667,13 @@ async def cmd_volume(message: Message) -> None:
     chat_id = message.chat.id
     if not query:
         vol = await queue_manager.get_volume(chat_id)
-        await message.answer(f"🔊 Current volume: <b>{vol}%</b>\n\nUsage: /volume 1-200", parse_mode="HTML")
+        card = (
+            RichCard()
+            .heading([plain("🔊 "), b("Volume")], size=1)
+            .quote([[c(f"{vol}%"), plain("   "), plain(meter(vol, 200))]])
+            .footer("/volume 1-200 to change it")
+        )
+        await send_card(message, card)
         return
     try:
         vol = int(query)
@@ -662,7 +681,9 @@ async def cmd_volume(message: Message) -> None:
         await reply_error(message, "Volume must be a number between 1 and 200.")
         return
     vol = await stream_manager.change_volume(chat_id, vol)
-    await message.answer(f"🔊 Volume set to <b>{vol}%</b>", parse_mode="HTML")
+    await send_card(
+        message, action_card("volume", _actor(message), detail=f"{vol}%")
+    )
 
 
 @router.message(F.audio | F.voice | F.video | F.document)
@@ -704,7 +725,7 @@ async def handle_media_file(message: Message, bot: Bot) -> None:
     chat_id = message.chat.id
     if stream_manager.is_playing(chat_id):
         pos = await queue_manager.add(chat_id, track)
-        await status.edit_text(f"✅ File queued at <b>#{pos}</b>", parse_mode="HTML")
+        await send_card(message, queued_card(track, pos, pos), edit=status)
     else:
         await play_track(message, track, force=True, edit_msg=status)
 

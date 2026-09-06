@@ -12,7 +12,9 @@ from bot.services.chat_settings import chat_settings
 from bot.services.queue import queue_manager
 from bot.services.stats import bot_stats
 from bot.services.stream import stream_manager
+from bot.utils.cards import success_card, track_info_card
 from bot.utils.formatters import bq, bold, error_card, format_duration, italic, link
+from bot.utils.rich import send_card
 from bot.utils.helpers import extract_query, reply_error
 
 router = Router(name="misc")
@@ -64,9 +66,15 @@ async def cmd_speed(message: Message) -> None:
     if current and stream_manager.is_playing(chat_id):
         current["_speed"] = speed
         await stream_manager.play(chat_id, current)
-        await message.answer(f"⚡ Speed set to <b>{speed}x</b> — replaying with new speed.", parse_mode="HTML")
+        await send_card(
+            message,
+            success_card(f"Speed set to {speed}x", "Replaying from the top at the new speed."),
+        )
     else:
-        await message.answer(f"⚡ Speed saved: <b>{speed}x</b> (applies on next play)", parse_mode="HTML")
+        await send_card(
+            message,
+            success_card(f"Speed saved: {speed}x", "It applies to the next track you play."),
+        )
 
 
 @router.message(Command("info"))
@@ -76,22 +84,11 @@ async def cmd_info(message: Message) -> None:
         await reply_error(message, "Nothing is playing.")
         return
 
-    lines = [
-        f"ℹ️ {bold('Track Info')}\n",
-        f"🎵 {bold(current.get('title', 'Unknown'))}",
-        f"👤 {italic(current.get('artist', 'Unknown'))}",
-        f"⏱ {format_duration(current.get('duration'))}",
-        f"🙋 {current.get('requester', '—')}",
-        f"📦 Source: {current.get('source', 'youtube')}",
-    ]
-    if current.get("url"):
-        lines.append(f"🔗 {link('Open', current['url'])}")
-    if current.get("is_live"):
-        lines.append("📡 Live stream")
-    if current.get("is_video"):
-        lines.append("🎬 Video mode")
-
-    await message.answer("\n".join(lines), parse_mode="HTML")
+    # track_info_card already renders every one of these fields as rich
+    # blocks; hand-assembling the same lines here meant /info was the one
+    # place the styling never reached.
+    elapsed = stream_manager.elapsed(message.chat.id)
+    await send_card(message, track_info_card(current, elapsed))
 
 
 @router.message(Command("source"))

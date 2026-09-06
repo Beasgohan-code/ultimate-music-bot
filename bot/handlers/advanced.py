@@ -33,6 +33,7 @@ from bot.utils.formatters import (
     success_card,
 )
 from bot.utils.helpers import extract_query, is_group_chat, reply_error
+from bot.utils.rich import RichCard, b, c, plain, send_card
 from bot.utils.play_helpers import play_track
 
 logger = logging.getLogger(__name__)
@@ -236,11 +237,22 @@ async def cmd_ping(message: Message) -> None:
     msg = await message.answer("🏓 Pinging…")
     latency = (time.monotonic() - start) * 1000
     stats = await bot_stats.summary()
-    await msg.edit_text(
-        f"🏓 <b>Pong!</b> <code>{latency:.0f}ms</code>\n"
-        f"⏱ Uptime: <code>{stats['uptime']}</code>\n"
-        f"📊 Commands: <code>{stats['commands']}</code>  •  Streams: <code>{stats['streams']}</code>",
-        parse_mode="HTML",
+    card = (
+        RichCard()
+        .heading([plain("🏓 "), b("Pong!")], size=1)
+        .quote(
+            [
+                [plain("⚡ Latency   "), c(f"{latency:.0f} ms")],
+                [plain("⏱ Uptime    "), c(str(stats["uptime"]))],
+                [
+                    plain("📊 Commands  "),
+                    c(str(stats["commands"])),
+                    plain("   •   Streams "),
+                    c(str(stats["streams"])),
+                ],
+            ]
+        )
     )
+    await send_card(msg, card, edit=msg)
 
 

@@ -29,6 +29,7 @@ from bot.utils.guards import (
     mention_id,
     split_duration_reason,
 )
+from bot.utils.cards import success_card
 from bot.utils.rich import RichCard, a, b, c, plain, send_card, send_html
 
 logger = logging.getLogger(__name__)
@@ -454,7 +455,9 @@ async def cmd_purge(message: Message, bot: Bot) -> None:
     if batch:
         deleted += await _delete_batch(bot, message.chat.id, batch)
 
-    note = await message.answer(f"🧹 <b>Purged {deleted} messages.</b>", parse_mode="HTML")
+    note = await message.answer(
+        success_card(f"Purged {deleted} messages.").to_html(), parse_mode="HTML"
+    )
     await asyncio.sleep(4)
     try:
         await note.delete()
