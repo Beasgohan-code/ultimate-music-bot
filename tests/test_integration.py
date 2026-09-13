@@ -5505,3 +5505,99 @@ def test_a_dead_service_is_reported_as_dead_not_as_drm():
     # Still-running services must not be labelled discontinued.
     assert platforms.discontinued_note("Tidal") == ""
     assert platforms.unsupported_service("https://open.spotify.com/track/x") == ""
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Full playback lifecycle against a mocked PyTgCalls
+#
+# The unit tests cover each method; this drives the sequence a real session
+# actually follows, and asserts on the MediaStream handed to the library.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def test_a_whole_playback_session_holds_together():
+    import asyncio
+    import time
+    from unittest.mock import AsyncMock, MagicMock
+
+    from bot.services.queue import queue_manager
+    from bot.services.stream import StreamManager
+
+    async def scenario():
+        manager = StreamManager()
+        calls = MagicMock()
+        for method in ("play", "leave_call", "pause", "resume", "mute", "unmute"):
+            setattr(calls, method, AsyncMock())
+        manager._calls = calls
+
+        chat = -100424242
+        await queue_manager.reset(chat)
+        alive = int(time.time()) + 7200
+        first = {
+            "title": "A", "duration": 300, "id": "a",
+            "url": "https://youtube.com/watch?v=a",
+            "stream_url": f"https://cdn/a?expire={alive}",
+        }
+        second = {
+            "title": "B", "duration": 240, "id": "b",
+            "url": "https://youtube.com/watch?v=b",
+            "stream_url": f"https://cdn/b?expire={alive}",
+        }
+
+        await manager.play(chat, first)
+        assert manager.is_playing(chat)
+        await manager.pause(chat)
+        assert manager.is_paused(chat)
+        await manager.resume(chat)
+        assert not manager.is_paused(chat)
+
+        await queue_manager.try_add(chat, second)
+        assert (await manager.skip(chat))["title"] == "B"
+
+        # Seeking: py-tgcalls 2.3.3 has no seek, so this must re-play the
+        # track with an ffmpeg -ss offset. Returning a position without
+        # passing -ss would restart from zero while claiming it seeked.
+        calls.play.reset_mock()
+        assert await manager.seek(chat, 30) == 30
+        stream = calls.play.await_args.args[1]
+        assert "-ss 30" in (stream._ffmpeg_parameters or ""), "seek lost its offset"
+
+        # Volume rides along in the same ffmpeg filter chain.
+        calls.change_volume_call = AsyncMock(side_effect=RuntimeError("unsupported"))
+        await manager.change_volume(chat, 55)
+        calls.play.reset_mock()
+        await manager.seek(chat, 20)
+        stream = calls.play.await_args.args[1]
+        assert "-ss 20" in stream._ffmpeg_parameters
+        assert "volume=0.55" in stream._ffmpeg_parameters
+
+        await manager.stop(chat)
+        assert not manager.is_playing(chat)
+        assert calls.leave_call.await_count == 1
+        await queue_manager.reset(chat)
+
+    asyncio.run(scenario())
+
+
+def test_seeking_a_live_stream_is_refused():
+    """There is no position to seek to, and -ss on a live manifest hangs."""
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock
+
+    from bot.services.queue import queue_manager
+    from bot.services.stream import StreamManager
+
+    async def scenario():
+        manager = StreamManager()
+        calls = MagicMock()
+        calls.play = AsyncMock()
+        manager._calls = calls
+        chat = -100424243
+        await queue_manager.reset(chat)
+        await manager.play(chat, {"title": "L", "is_live": True, "stream_url": "https://x/live"})
+        calls.play.reset_mock()
+        assert await manager.seek(chat, 30) is None
+        assert calls.play.await_count == 0, "a live stream must not be restarted"
+        await queue_manager.reset(chat)
+
+    asyncio.run(scenario())
