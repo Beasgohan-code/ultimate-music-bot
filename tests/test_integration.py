@@ -5601,3 +5601,51 @@ def test_seeking_a_live_stream_is_refused():
         await queue_manager.reset(chat)
 
     asyncio.run(scenario())
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Assistant session validation
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def _valid_session() -> str:
+    import base64
+    import struct
+
+    from pyrogram.storage.storage import Storage
+
+    packed = struct.pack(
+        Storage.SESSION_STRING_FORMAT, 2, 12345, False, b"\x11" * 256, 777000, False
+    )
+    return base64.urlsafe_b64encode(packed).decode().rstrip("=")
+
+
+def test_a_broken_session_string_is_explained_not_crashed():
+    """
+    Pyrogram struct-unpacks a fixed 271-byte record. Anything else raises
+    "struct.error: unpack requires a buffer of 271 bytes" inside the library
+    at assistant.start(), which kills the process and names neither the
+    variable nor the fix. A truncated copy-paste is the most common way a
+    fresh deploy fails, so it has to be caught with words.
+    """
+    from assistant.client import session_problem
+
+    assert "empty" in session_problem("")
+    assert "BOT TOKEN" in session_problem("8473981199:AAH1234567890abcdefgh")
+    assert "271" in session_problem("x" * 50), "say what was expected"
+    assert "base64" in session_problem("!!!not base64!!!")
+
+    # A well-formed session must pass, or this check blocks real deploys.
+    assert session_problem(_valid_session()) == ""
+    # Pyrogram pads base64 itself, so stripped '=' is not corruption.
+    assert session_problem(_valid_session() + "==") == ""
+
+
+def test_main_validates_the_session_before_pyrogram_sees_it():
+    import pathlib
+
+    source = pathlib.Path("main.py").read_text(encoding="utf-8")
+    assert "session_problem(" in source
+    assert source.index("session_problem(") < source.index("create_assistant("), (
+        "validate first, or the library crashes before the check runs"
+    )

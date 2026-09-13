@@ -35,7 +35,7 @@ def _patched_get_event_loop():
 
 asyncio.get_event_loop = _patched_get_event_loop
 
-from assistant.client import create_assistant, resolve_session  # noqa: E402
+from assistant.client import create_assistant, resolve_session, session_problem  # noqa: E402
 from bot.config import DATA_DIR, config  # noqa: E402
 from bot.handlers import (  # noqa: E402
     admin,
@@ -529,7 +529,29 @@ async def main() -> None:
 
     # After database.connect(): a session made with /genstring lives in
     # the database, and the env copy may be absent on a fresh deploy.
-    assistant = create_assistant(await resolve_session())
+    session = await resolve_session()
+
+    # Validate before Pyrogram sees it. A malformed value dies inside the
+    # library as "struct.error: unpack requires a buffer of 271 bytes",
+    # taking the whole process with it and naming neither the variable nor
+    # the fix -- and a truncated copy-paste is the most common way a fresh
+    # deploy fails.
+    problem = session_problem(session)
+    if problem:
+        logger.error("=" * 62)
+        logger.error("  UNUSABLE ASSISTANT SESSION")
+        logger.error("=" * 62)
+        logger.error("  %s.", problem)
+        logger.error("")
+        logger.error("  The assistant is the user account that joins voice chats.")
+        logger.error("  Generate a fresh session string with:")
+        logger.error("      python session_generator.py")
+        logger.error("  then set SESSION_STRING to the whole value it prints.")
+        logger.error("  You can also DM the bot /genstring once it is running.")
+        logger.error("=" * 62)
+        sys.exit(1)
+
+    assistant = create_assistant(session)
     calls = stream_manager.setup(assistant)
 
     bot = Bot(
