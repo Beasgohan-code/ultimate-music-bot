@@ -130,6 +130,30 @@ def user_message(rec: ErrorRecord) -> str:
     )
 
 
+#: Longest exception text we will ever show a user. Telegram API errors are
+#: short and genuinely useful ("chat not found", "not enough rights"); a
+#: pydantic ValidationError is hundreds of characters of internal schema.
+_MAX_REASON = 200
+
+
+def safe_reason(exc: BaseException) -> str:
+    """One short, HTML-escaped line describing a failure, fit for a chat.
+
+    Handlers used to interpolate ``{exc}`` straight into a message. Three
+    problems with that: the text is unbounded, it exposes internals nobody
+    outside the project can act on, and it is unescaped -- an exception
+    carrying ``<`` breaks the HTML parse and the reply fails to send at all,
+    turning a small error into total silence.
+    """
+    text = str(exc).strip() or exc.__class__.__name__
+    # Telegram prefixes its own errors; the useful part is what follows.
+    text = text.replace("Telegram server says - ", "")
+    first = text.splitlines()[0].strip()
+    if len(first) > _MAX_REASON:
+        first = first[: _MAX_REASON - 1].rstrip() + "…"
+    return html.escape(first)
+
+
 def snapshot() -> list[dict[str, Any]]:
     """Recent distinct errors, worst first — powers /errors for the owner."""
     ordered = sorted(_REGISTRY.values(), key=lambda r: (r.count, r.last_seen), reverse=True)

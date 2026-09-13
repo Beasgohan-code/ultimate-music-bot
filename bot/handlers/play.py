@@ -25,6 +25,7 @@ from bot.services.music import (
     last_error as music_last_error,
     looks_unsupported,
     looks_blocked,
+    looks_transient,
     search_youtube,
 )
 from bot.services.queue import queue_manager
@@ -287,6 +288,20 @@ async def _play_body(
                     "That link isn't playable media.",
                     "It points at a web page, not a song. Send a track link "
                     "or just the song name.",
+                ),
+                edit=status,
+            )
+        elif looks_transient(err):
+            # The network failed, not the query. Telling someone to "try a
+            # different search term" here is actively wrong -- no term they
+            # type can succeed while the host cannot reach the internet.
+            await send_card(
+                message,
+                error_card(
+                    "I couldn't reach any music service.",
+                    "That's a network problem on my side, not a bad search. "
+                    "Every source and the public mirrors all failed to answer. "
+                    "Try again in a minute.",
                 ),
                 edit=status,
             )

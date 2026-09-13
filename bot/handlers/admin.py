@@ -22,6 +22,7 @@ from bot.services.stream import stream_manager
 from bot.utils.guards import extract_target, is_sudo, mention_id
 from bot.utils.cards import meter, success_card
 from bot.utils.rich import RichCard, b, c, i, plain, send_card, send_html
+from bot.services.errors import safe_reason
 
 logger = logging.getLogger(__name__)
 router = Router(name="admin")
@@ -367,7 +368,7 @@ async def cmd_logs(message: Message) -> None:
     try:
         await message.answer_document(FSInputFile(log_path), caption="📄 Recent logs")
     except Exception as exc:
-        await send_html(message, f"❌ <code>{exc}</code>")
+        await send_html(message, f"❌ <code>{safe_reason(exc)}</code>")
 
 
 @router.message(Command("sysinfo", "sys"))

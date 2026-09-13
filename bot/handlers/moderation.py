@@ -31,6 +31,7 @@ from bot.utils.guards import (
 )
 from bot.utils.cards import success_card
 from bot.utils.rich import RichCard, a, b, c, plain, send_card, send_html
+from bot.services.errors import safe_reason
 
 logger = logging.getLogger(__name__)
 router = Router(name="moderation")
@@ -124,7 +125,7 @@ async def cmd_ban(message: Message, bot: Bot) -> None:
     try:
         await bot.ban_chat_member(message.chat.id, uid, until_date=until)
     except Exception as exc:
-        await send_html(message, f"❌ <b>Could not ban:</b> <code>{exc}</code>")
+        await send_html(message, f"❌ <b>Could not ban:</b> <code>{safe_reason(exc)}</code>")
         return
 
     if cmd == "dban" and message.reply_to_message:
@@ -158,7 +159,7 @@ async def cmd_unban(message: Message, bot: Bot) -> None:
     try:
         await bot.unban_chat_member(message.chat.id, uid, only_if_banned=True)
     except Exception as exc:
-        await send_html(message, f"❌ <b>Could not unban:</b> <code>{exc}</code>")
+        await send_html(message, f"❌ <b>Could not unban:</b> <code>{safe_reason(exc)}</code>")
         return
     await send_html(message, f"✅ <b>{mention_id(uid, name)} has been unbanned.</b>")
     await _log_action(bot, message, "unban", uid, name, reason)
@@ -177,7 +178,7 @@ async def cmd_kick(message: Message, bot: Bot) -> None:
         await bot.ban_chat_member(message.chat.id, uid)
         await bot.unban_chat_member(message.chat.id, uid, only_if_banned=True)
     except Exception as exc:
-        await send_html(message, f"❌ <b>Could not kick:</b> <code>{exc}</code>")
+        await send_html(message, f"❌ <b>Could not kick:</b> <code>{safe_reason(exc)}</code>")
         return
     if (message.text or "").lstrip("/").startswith("dkick") and message.reply_to_message:
         try:
@@ -204,7 +205,7 @@ async def cmd_kickme(message: Message, bot: Bot) -> None:
         await bot.unban_chat_member(message.chat.id, uid, only_if_banned=True)
         await send_html(message, "👋 <b>See you around!</b>")
     except Exception as exc:
-        await send_html(message, f"❌ <code>{exc}</code>")
+        await send_html(message, f"❌ <code>{safe_reason(exc)}</code>")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -228,7 +229,7 @@ async def cmd_mute(message: Message, bot: Bot) -> None:
             message.chat.id, uid, permissions=MUTED_PERMISSIONS, until_date=until
         )
     except Exception as exc:
-        await send_html(message, f"❌ <b>Could not mute:</b> <code>{exc}</code>")
+        await send_html(message, f"❌ <b>Could not mute:</b> <code>{safe_reason(exc)}</code>")
         return
 
     if (message.text or "").lstrip("/").startswith("dmute") and message.reply_to_message:
@@ -255,7 +256,7 @@ async def cmd_unmute(message: Message, bot: Bot) -> None:
     try:
         await bot.restrict_chat_member(message.chat.id, uid, permissions=UNMUTED_PERMISSIONS)
     except Exception as exc:
-        await send_html(message, f"❌ <b>Could not unmute:</b> <code>{exc}</code>")
+        await send_html(message, f"❌ <b>Could not unmute:</b> <code>{safe_reason(exc)}</code>")
         return
     await send_html(message, f"🔊 <b>{mention_id(uid, name)} can speak again.</b>")
     await _log_action(bot, message, "unmute", uid, name, reason)
@@ -299,7 +300,7 @@ async def cmd_warn(message: Message, bot: Bot) -> None:
                     message.chat.id, uid, permissions=MUTED_PERMISSIONS
                 )
         except Exception as exc:
-            await send_html(message, f"⚠️ <b>Warn limit reached but action failed:</b> <code>{exc}</code>")
+            await send_html(message, f"⚠️ <b>Warn limit reached but action failed:</b> <code>{safe_reason(exc)}</code>")
             return
 
         card = (
@@ -491,7 +492,7 @@ async def cmd_del(message: Message, bot: Bot) -> None:
         await message.reply_to_message.delete()
         await message.delete()
     except Exception as exc:
-        await send_html(message, f"❌ <code>{exc}</code>")
+        await send_html(message, f"❌ <code>{safe_reason(exc)}</code>")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -513,7 +514,7 @@ async def cmd_pin(message: Message, bot: Bot) -> None:
         )
         await send_html(message, "📌 <b>Pinned.</b>")
     except Exception as exc:
-        await send_html(message, f"❌ <code>{exc}</code>")
+        await send_html(message, f"❌ <code>{safe_reason(exc)}</code>")
 
 
 @router.message(Command("unpin"))
@@ -527,7 +528,7 @@ async def cmd_unpin(message: Message, bot: Bot) -> None:
             await bot.unpin_chat_message(message.chat.id)
         await send_html(message, "📌 <b>Unpinned.</b>")
     except Exception as exc:
-        await send_html(message, f"❌ <code>{exc}</code>")
+        await send_html(message, f"❌ <code>{safe_reason(exc)}</code>")
 
 
 @router.message(Command("unpinall"))
@@ -538,7 +539,7 @@ async def cmd_unpinall(message: Message, bot: Bot) -> None:
         await bot.unpin_all_chat_messages(message.chat.id)
         await send_html(message, "📌 <b>All messages unpinned.</b>")
     except Exception as exc:
-        await send_html(message, f"❌ <code>{exc}</code>")
+        await send_html(message, f"❌ <code>{safe_reason(exc)}</code>")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -567,7 +568,7 @@ async def cmd_promote(message: Message, bot: Bot) -> None:
             can_promote_members=full,
         )
     except Exception as exc:
-        await send_html(message, f"❌ <b>Could not promote:</b> <code>{exc}</code>")
+        await send_html(message, f"❌ <b>Could not promote:</b> <code>{safe_reason(exc)}</code>")
         return
     invalidate_admin_cache(message.chat.id)
     level = "full admin" if full else "admin"
@@ -591,7 +592,7 @@ async def cmd_demote(message: Message, bot: Bot) -> None:
             can_change_info=False, can_promote_members=False,
         )
     except Exception as exc:
-        await send_html(message, f"❌ <b>Could not demote:</b> <code>{exc}</code>")
+        await send_html(message, f"❌ <b>Could not demote:</b> <code>{safe_reason(exc)}</code>")
         return
     invalidate_admin_cache(message.chat.id)
     await send_html(message, f"⬇️ <b>{mention_id(uid, name)} has been demoted.</b>")
@@ -612,7 +613,7 @@ async def cmd_title(message: Message, bot: Bot) -> None:
         await bot.set_chat_administrator_custom_title(message.chat.id, uid, title[:16])
         await send_html(message, f"🏷 <b>{mention_id(uid, name)} is now “{title[:16]}”.</b>")
     except Exception as exc:
-        await send_html(message, f"❌ <code>{exc}</code>")
+        await send_html(message, f"❌ <code>{safe_reason(exc)}</code>")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -626,7 +627,7 @@ async def cmd_adminlist(message: Message, bot: Bot) -> None:
     try:
         members = await bot.get_chat_administrators(message.chat.id)
     except Exception as exc:
-        await send_html(message, f"❌ <code>{exc}</code>")
+        await send_html(message, f"❌ <code>{safe_reason(exc)}</code>")
         return
 
     creator = [m for m in members if m.status == "creator"]

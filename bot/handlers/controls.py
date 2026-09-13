@@ -17,6 +17,7 @@ from bot.services.autoplay import autoplay
 from bot.utils.cards import action_card, error_card
 from bot.utils.guards import is_admin_or_auth, is_group
 from bot.utils.rich import RichCard, b, c, i, plain, send_card, send_html
+from bot.services.errors import safe_reason
 
 logger = logging.getLogger(__name__)
 router = Router(name="controls")
@@ -122,7 +123,7 @@ async def cmd_seek(message: Message, bot: Bot) -> None:
     try:
         position = await stream_manager.seek_relative(chat_id, -delta if back else delta)
     except Exception as exc:
-        await send_html(message, f"❌ <b>Seek failed:</b> <code>{exc}</code>")
+        await send_html(message, f"❌ <b>Seek failed:</b> <code>{safe_reason(exc)}</code>")
         return
     if position is None:
         await send_html(message, "⚠️ <b>Seeking isn't available for this track.</b>")
