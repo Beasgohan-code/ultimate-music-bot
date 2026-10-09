@@ -5839,3 +5839,73 @@ def test_controls_used_while_paused_keep_the_position():
     replay, forward = asyncio.run(scenario())
     assert "-ss 90" in replay, f"volume change restarted the track: {replay!r}"
     assert forward == 100, f"/forward 10 while paused landed at {forward}s, not 100s"
+
+
+def test_finished_chats_do_not_leak_playback_state():
+    """A bot in thousands of groups kept 6 dict entries per chat forever."""
+    import asyncio
+    import time
+
+    from bot.services.queue import queue_manager
+    from bot.services.stream import StreamManager
+
+    class Calls:
+        async def play(self, *a, **k): pass
+        async def leave_call(self, *a, **k): pass
+        async def pause(self, *a, **k): pass
+        async def resume(self, *a, **k): pass
+        async def mute(self, *a, **k): pass
+        async def unmute(self, *a, **k): pass
+
+    async def scenario():
+        manager = StreamManager()
+        manager._calls = Calls()
+        alive = int(time.time()) + 7200
+        track = {"title": "S", "duration": 300, "stream_url": f"https://cdn/s?expire={alive}"}
+
+        chats = [-100900000 - i for i in range(25)]
+        for chat in chats:
+            await queue_manager.reset(chat)
+            await manager.play(chat, track)
+            # Merely reading the volume used to insert a defaultdict entry.
+            await queue_manager.get_volume(chat)
+            await manager.stop(chat)
+
+        leaked = {
+            name: len(getattr(manager, name))
+            for name in ("_playing", "_paused", "_muted", "_offset", "_started_at")
+        }
+        leaked["_current"] = len([c for c in chats if queue_manager._current.get(c)])
+        leaked["_volume"] = len([c for c in chats if c in queue_manager._volume])
+
+        locks_before = len(manager._locks)
+        released = manager.prune_idle()
+        locks_after = len(manager._locks)
+
+        # A chat that is genuinely mid-stream must survive the sweep.
+        live = -100999999
+        await manager.play(live, track)
+        kept = manager.prune_idle()
+        survived = manager.is_playing(live) and live in manager._locks
+        await manager.stop(live)
+        await queue_manager.reset(live)
+        for chat in chats:
+            await queue_manager.reset(chat)
+        return leaked, locks_before, released, locks_after, kept, survived
+
+    leaked, locks_before, released, locks_after, kept, survived = asyncio.run(scenario())
+
+    assert not any(leaked.values()), f"state left behind for finished chats: {leaked}"
+    assert locks_before == 25, "one lock per chat is expected before the sweep"
+    assert released == 25 and locks_after == 0, "the janitor must release idle locks"
+    assert kept == 0 and survived, "prune_idle must not touch a chat that is streaming"
+
+
+def test_janitor_sweeps_idle_chat_state():
+    """The prune is only useful if something actually calls it."""
+    import inspect
+
+    import main
+
+    source = inspect.getsource(main._janitor)
+    assert "prune_idle()" in source, "idle chat state is never swept"

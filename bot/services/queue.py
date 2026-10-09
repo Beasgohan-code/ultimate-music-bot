@@ -105,6 +105,12 @@ class QueueManager:
         return self._current.get(chat_id)
 
     async def set_current(self, chat_id: int, track: dict[str, Any] | None) -> None:
+        if track is None:
+            # Storing None keeps a dead entry for every chat that ever
+            # finished a track; readers all use .get(), so dropping it is
+            # the same value without the leak.
+            self._current.pop(chat_id, None)
+            return
         self._current[chat_id] = track
 
     async def size(self, chat_id: int) -> int:
@@ -227,7 +233,9 @@ class QueueManager:
         return vol
 
     async def get_volume(self, chat_id: int) -> int:
-        return self._volume[chat_id]
+        # .get() rather than [], or merely *reading* a chat's volume inserts
+        # a default entry into the defaultdict and keeps it forever.
+        return self._volume.get(chat_id, config.default_volume)
 
     async def reset(self, chat_id: int) -> None:
         """Forget everything about a chat.

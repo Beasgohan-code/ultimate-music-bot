@@ -418,8 +418,9 @@ def _preflight() -> None:
 
 
 async def _janitor() -> None:
-    """Periodically clear out stale downloads and rendered thumbnails."""
+    """Periodically clear out stale downloads, thumbnails and chat state."""
     from bot.services.downloads import prune_downloads
+    from bot.services.stream import stream_manager
     from bot.services.thumbnails import prune_thumbnails
 
     while True:
@@ -427,6 +428,12 @@ async def _janitor() -> None:
             await asyncio.sleep(3600)
             await prune_downloads()
             await prune_thumbnails()
+            # Memory, not disk: per-chat playback state for groups the bot
+            # has finished with. Harmless in one group, ~5 KB per chat in
+            # thousands of them.
+            released = stream_manager.prune_idle()
+            if released:
+                logger.debug("Released playback state for %d idle chats", released)
         except asyncio.CancelledError:
             raise
         except Exception as exc:

@@ -335,12 +335,39 @@ class StreamManager:
             await self.calls.leave_call(chat_id)
         except Exception as exc:
             logger.debug("leave_call(%s) failed: %s", chat_id, exc)
-        self._playing[chat_id] = False
-        self._paused[chat_id] = False
-        self._muted[chat_id] = False
+        # Drop the entries rather than storing False. Every reader uses
+        # .get() with a falsy default, so this is identical to the caller --
+        # but a bot sitting in thousands of groups was keeping three dict
+        # entries per chat forever, for chats it had long since finished with.
+        self._playing.pop(chat_id, None)
+        self._paused.pop(chat_id, None)
+        self._muted.pop(chat_id, None)
         self._offset.pop(chat_id, None)
         self._started_at.pop(chat_id, None)
         await queue_manager.set_current(chat_id, None)
+
+    def prune_idle(self) -> int:
+        """Drop per-chat state for chats that are not streaming.
+
+        stop() clears the common path, but a crash mid-play can leave entries
+        behind, and the lock table grows on its own. Returns how many chats
+        were released so the janitor can log it.
+
+        A lock is only removed when it is not held: an unheld asyncio.Lock
+        cannot have waiters, and there is no await in this loop, so no one can
+        start waiting on an entry between the check and the pop.
+        """
+        released = 0
+        for chat_id in [c for c, lock in self._locks.items() if not lock.locked()]:
+            if self._playing.get(chat_id) or self._started_at.get(chat_id):
+                continue
+            self._locks.pop(chat_id, None)
+            self._playing.pop(chat_id, None)
+            self._paused.pop(chat_id, None)
+            self._muted.pop(chat_id, None)
+            self._offset.pop(chat_id, None)
+            released += 1
+        return released
 
     async def stop(self, chat_id: int) -> None:
         async with self._lock(chat_id):
