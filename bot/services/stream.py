@@ -302,13 +302,24 @@ class StreamManager:
             await self._play_now(chat_id, track, seek=seek)
 
     async def pause(self, chat_id: int) -> None:
+        # Freeze the position actually reached. elapsed() reports _offset
+        # while paused, and _offset otherwise only holds the last *seek*
+        # target -- normally 0. Without this, pausing 90s into a track made
+        # /np read 0:00, sent "/forward 10" to 0:10 instead of 1:40, and let
+        # a volume change (which falls back to re-playing with -ss) restart
+        # the track from the beginning.
+        position = self.elapsed(chat_id)
         await self.calls.pause(chat_id)
         self._paused[chat_id] = True
+        self._offset[chat_id] = position
 
     async def resume(self, chat_id: int) -> None:
         await self.calls.resume(chat_id)
+        # _offset already carries the frozen position, so the clock restarts
+        # from now. Re-deriving it from elapsed() here would count the paused
+        # position twice.
+        self._started_at[chat_id] = time.time()
         self._paused[chat_id] = False
-        self._started_at[chat_id] = time.time() - self.elapsed(chat_id)
 
     async def mute(self, chat_id: int) -> None:
         await self.calls.mute(chat_id)

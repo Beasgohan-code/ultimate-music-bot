@@ -450,7 +450,7 @@ test is `async def`, so without `pytest-asyncio` two dozen tests fail with
 *"async def functions are not natively supported"* and look like real
 breakage.
 
-310 tests covering rich rendering and HTML escaping, command-routing conflicts,
+312 tests covering rich rendering and HTML escaping, command-routing conflicts,
 queue and loop semantics, warn escalation, word-boundary blacklist matching, lock
 propagation, duration and schedule parsing, placeholder injection safety, locale
 integrity and completeness, download-cache behaviour, vote thresholds, cookieless mirror

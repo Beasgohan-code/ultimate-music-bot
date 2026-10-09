@@ -5741,3 +5741,101 @@ def test_concurrent_skips_each_take_a_different_track():
     assert titles == ["Q0", "Q1", "Q2"], titles
     # The announced track must be the one that actually started last.
     assert current["title"] == titles[-1]
+
+
+def test_pause_freezes_the_real_position_not_zero():
+    """Pausing used to throw away how far into the track we were.
+
+    elapsed() reports _offset while paused, but _offset otherwise holds the
+    last *seek* target -- normally 0. So a pause 90s in reported 0:00, and
+    everything derived from elapsed() inherited the error.
+    """
+    import asyncio
+    import time
+    from unittest.mock import AsyncMock, MagicMock
+
+    from bot.services.queue import queue_manager
+    from bot.services.stream import StreamManager
+
+    async def scenario():
+        manager = StreamManager()
+        calls = MagicMock()
+        for method in ("play", "leave_call", "pause", "resume", "mute", "unmute"):
+            setattr(calls, method, AsyncMock())
+        manager._calls = calls
+
+        chat = -100727272
+        await queue_manager.reset(chat)
+        alive = int(time.time()) + 7200
+        track = {"title": "S", "duration": 300, "stream_url": f"https://cdn/s?expire={alive}"}
+        await manager.play(chat, track)
+
+        manager._started_at[chat] -= 90
+        marks = {"playing": manager.elapsed(chat)}
+        await manager.pause(chat)
+        marks["paused"] = manager.elapsed(chat)
+        await manager.resume(chat)
+        marks["resumed"] = manager.elapsed(chat)
+        manager._started_at[chat] -= 10
+        marks["after_resume"] = manager.elapsed(chat)
+        # A second cycle is what catches double-counting.
+        await manager.pause(chat)
+        marks["paused_again"] = manager.elapsed(chat)
+        await manager.resume(chat)
+        marks["resumed_again"] = manager.elapsed(chat)
+        await queue_manager.reset(chat)
+        return marks
+
+    marks = asyncio.run(scenario())
+    assert marks["playing"] == 90
+    assert marks["paused"] == 90, "a paused player must not report 0:00"
+    assert marks["resumed"] == 90, "resuming must not lose the position"
+    assert marks["after_resume"] == 100
+    assert marks["paused_again"] == 100
+    assert marks["resumed_again"] == 100, "pause/resume must not count the position twice"
+
+
+def test_controls_used_while_paused_keep_the_position():
+    """/forward and a volume change while paused must not restart the track."""
+    import asyncio
+    import time
+    from unittest.mock import AsyncMock, MagicMock
+
+    from bot.services.queue import queue_manager
+    from bot.services.stream import StreamManager
+
+    async def scenario():
+        manager = StreamManager()
+        calls = MagicMock()
+        seeks: list[str] = []
+
+        async def record(chat_id, stream):
+            seeks.append(stream._ffmpeg_parameters or "")
+
+        calls.play = AsyncMock(side_effect=record)
+        for method in ("leave_call", "pause", "resume", "mute", "unmute"):
+            setattr(calls, method, AsyncMock())
+        # Force the re-play fallback, as happens when native volume is absent.
+        calls.change_volume_call = AsyncMock(side_effect=RuntimeError("unsupported"))
+        manager._calls = calls
+
+        chat = -100828282
+        await queue_manager.reset(chat)
+        alive = int(time.time()) + 7200
+        track = {"title": "S", "duration": 300, "stream_url": f"https://cdn/s?expire={alive}"}
+        await manager.play(chat, track)
+        await queue_manager.set_current(chat, track)
+
+        manager._started_at[chat] -= 90
+        await manager.pause(chat)
+
+        seeks.clear()
+        await manager.change_volume(chat, 70)
+        replay = seeks[0] if seeks else ""
+        forward = await manager.seek_relative(chat, 10)
+        await queue_manager.reset(chat)
+        return replay, forward
+
+    replay, forward = asyncio.run(scenario())
+    assert "-ss 90" in replay, f"volume change restarted the track: {replay!r}"
+    assert forward == 100, f"/forward 10 while paused landed at {forward}s, not 100s"
