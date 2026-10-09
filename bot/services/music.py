@@ -462,9 +462,65 @@ def impersonate_status() -> str:
     return str(target)
 
 
+#: yt-dlp appends the same two sentences of boilerplate to most errors.
+#: They are identical every time and say nothing about this failure, but
+#: they triple the length of every log line.
+_NOISE = (
+    "; please report this issue on",
+    ". See https://curl.se/libcurl",
+    " Confirm you are on the latest version",
+    " (caused by ",
+)
+
+
+def _brief(error_text: str, limit: int = 160) -> str:
+    """Trim an extractor error to the part that identifies the failure."""
+    text = " ".join((error_text or "").split())
+    for marker in _NOISE:
+        cut = text.find(marker)
+        if cut > 0:
+            text = text[:cut]
+    text = text.strip().rstrip(".;:")
+    if len(text) > limit:
+        text = text[: limit - 1].rstrip() + "…"
+    return text or "unknown error"
+
+
+class _YdlLog:
+    """Route yt-dlp's own output into our logger instead of stderr.
+
+    ``quiet`` and ``no_warnings`` do not cover errors: yt-dlp writes those
+    straight to stderr regardless, as a multi-line block ending in "please
+    report this issue on github". A blocked server produces one per player
+    client per backend, so a single /play can emit a dozen -- which buries
+    the one line that actually explains the failure, and on a hosted plan
+    costs real money in log volume.
+
+    Failures are not lost. ``_run_ytdl`` already catches the exception,
+    stores it in ``_last_error`` and decides what the user is told; this
+    only stops the library narrating the same event a second time.
+    """
+
+    __slots__ = ()
+
+    def debug(self, msg: str) -> None:
+        pass
+
+    def info(self, msg: str) -> None:
+        pass
+
+    def warning(self, msg: str) -> None:
+        logger.debug("yt-dlp: %s", msg)
+
+    def error(self, msg: str) -> None:
+        # debug, not error: the caller raises and reports it properly.
+        logger.debug("yt-dlp: %s", msg)
+
+
 YDL_OPTS_BASE: dict[str, Any] = {
     "quiet": True,
     "no_warnings": True,
+    "logger": _YdlLog(),
     "noplaylist": True,
     # A blocked IP fails fast and identically on every retry, so long
     # timeouts and deep retry stacks only multiply the wait. Five clients x
@@ -596,11 +652,21 @@ async def _run_ytdl_once(
             logger.error(
                 "yt-dlp blocked while extracting %r: %s | %s",
                 query,
-                exc,
+                _brief(_last_error),
                 BLOCKED_HINT,
             )
+        elif looks_transient(_last_error):
+            # The network, not the query. Expected on a flaky host and
+            # already retried by the caller, so do not shout about it.
+            logger.warning(
+                "yt-dlp could not reach the network for %r: %s",
+                query,
+                _brief(_last_error),
+            )
         else:
-            logger.error("yt-dlp extraction failed for %r: %s", query, exc)
+            logger.error(
+                "yt-dlp extraction failed for %r: %s", query, _brief(_last_error)
+            )
         return None
     finally:
         # Never block on the worker: on timeout it is still inside yt-dlp and

@@ -3593,12 +3593,14 @@ def test_one_dead_track_does_not_kill_the_queue():
             return track
         return None
 
-    async def play(chat_id, track):
+    async def play(chat_id, track, *, seek=0):
         if track["title"].startswith("dead"):
             raise RuntimeError("Video unavailable")
 
     manager = StreamManager()
-    manager.play = play
+    # _handle_end runs under the chat lock, so it calls the unlocked
+    # _play_now seam rather than the public play().
+    manager._play_now = play
     manager.stop = AsyncMock()
 
     seen: dict = {}
@@ -3635,12 +3637,12 @@ def test_autoskip_is_capped():
     async def next_track(chat_id):
         return {"title": f"dead-{attempts['n']}"}
 
-    async def play(chat_id, track):
+    async def play(chat_id, track, *, seek=0):
         attempts["n"] += 1
         raise RuntimeError("Video unavailable")
 
     manager = StreamManager()
-    manager.play = play
+    manager._play_now = play
     manager.stop = AsyncMock()
 
     async def run():
@@ -5649,3 +5651,93 @@ def test_main_validates_the_session_before_pyrogram_sees_it():
     assert source.index("session_problem(") < source.index("create_assistant("), (
         "validate first, or the library crashes before the check runs"
     )
+
+
+def test_concurrent_play_calls_do_not_interleave():
+    """A track ending and a manual /skip hit play() at the same moment.
+
+    Before the per-chat lock both entered PyTgCalls before either returned
+    ('enter','enter','exit','exit'), so the group was told it was playing
+    one song while the other came out of the speaker.
+    """
+    import asyncio
+    import time
+    from unittest.mock import AsyncMock, MagicMock
+
+    from bot.services.queue import queue_manager
+    from bot.services.stream import StreamManager
+
+    async def scenario():
+        manager = StreamManager()
+        calls = MagicMock()
+        order: list[str] = []
+
+        async def slow_play(chat_id, stream):
+            order.append("enter")
+            await asyncio.sleep(0.02)
+            order.append("exit")
+
+        calls.play = AsyncMock(side_effect=slow_play)
+        for method in ("leave_call", "pause", "resume", "mute", "unmute"):
+            setattr(calls, method, AsyncMock())
+        manager._calls = calls
+
+        chat = -100525252
+        await queue_manager.reset(chat)
+        alive = int(time.time()) + 7200
+        track_a = {"title": "A", "stream_url": f"https://cdn/a?expire={alive}"}
+        track_b = {"title": "B", "stream_url": f"https://cdn/b?expire={alive}"}
+
+        await asyncio.gather(manager.play(chat, track_a), manager.play(chat, track_b))
+        await queue_manager.reset(chat)
+        return order
+
+    assert asyncio.run(scenario()) == ["enter", "exit", "enter", "exit"], (
+        "play() must hold the chat lock across the PyTgCalls await"
+    )
+
+
+def test_concurrent_skips_each_take_a_different_track():
+    """Three simultaneous /skip presses must not hand out the same track."""
+    import asyncio
+    import time
+    from unittest.mock import AsyncMock, MagicMock
+
+    from bot.services.queue import queue_manager
+    from bot.services.stream import StreamManager
+
+    async def scenario():
+        manager = StreamManager()
+        calls = MagicMock()
+
+        async def slow_play(chat_id, stream):
+            await asyncio.sleep(0.01)
+
+        calls.play = AsyncMock(side_effect=slow_play)
+        for method in ("leave_call", "pause", "resume", "mute", "unmute"):
+            setattr(calls, method, AsyncMock())
+        manager._calls = calls
+
+        chat = -100626262
+        await queue_manager.reset(chat)
+        alive = int(time.time()) + 7200
+        for index in range(4):
+            await queue_manager.try_add(
+                chat,
+                {"title": f"Q{index}", "stream_url": f"https://cdn/{index}?expire={alive}"},
+            )
+        await manager._play_now(chat, {"title": "live", "stream_url": f"https://cdn/x?expire={alive}"})
+
+        results = await asyncio.gather(
+            manager.skip(chat), manager.skip(chat), manager.skip(chat)
+        )
+        titles = [item["title"] for item in results if item]
+        current = await queue_manager.get_current(chat)
+        await queue_manager.reset(chat)
+        return titles, current
+
+    titles, current = asyncio.run(scenario())
+    assert len(titles) == len(set(titles)), f"a track was handed out twice: {titles}"
+    assert titles == ["Q0", "Q1", "Q2"], titles
+    # The announced track must be the one that actually started last.
+    assert current["title"] == titles[-1]

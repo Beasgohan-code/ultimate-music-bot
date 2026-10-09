@@ -6,6 +6,7 @@ queue advancement when a track ends.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import time
@@ -54,6 +55,21 @@ class StreamManager:
         self._on_track_end_callbacks: list[Callable] = []
         self._on_queue_empty_callbacks: list[Callable] = []
         self._on_autoskip_callbacks: list[Callable] = []
+        #: One lock per chat, serialising everything that changes what is
+        #: audible. Two callers really do collide: a track ending fires
+        #: auto-advance at the same moment someone presses /skip, and both
+        #: call play(). Without this they interleave -- two join_group_call
+        #: requests race, set_current() lands in arrival order rather than
+        #: completion order, and the group is told it is playing one song
+        #: while a different one comes out of the speaker.
+        self._locks: dict[int, asyncio.Lock] = {}
+
+    def _lock(self, chat_id: int) -> asyncio.Lock:
+        lock = self._locks.get(chat_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._locks[chat_id] = lock
+        return lock
 
     # ── lifecycle ───────────────────────────────────────────────────────
     def setup(self, user_client) -> PyTgCalls:
@@ -87,20 +103,25 @@ class StreamManager:
         # queue full of broken links can't spin.
         next_track = None
         skipped: list[str] = []
-        for _ in range(MAX_AUTOSKIP):
-            candidate = await queue_manager.next_track(chat_id)
-            if not candidate:
-                break
-            try:
-                await self.play(chat_id, candidate)
-                next_track = candidate
-                break
-            except Exception as exc:
-                title = candidate.get("title", "unknown")
-                skipped.append(title)
-                logger.warning(
-                    "Auto-advance skipped %r in %s: %s", title, chat_id, exc
-                )
+        # Under the chat lock: this fires on PyTgCalls' own thread the instant
+        # a track ends, which is exactly when a listener is most likely to
+        # press /skip. Both advance the queue, so without the lock they take
+        # two different tracks and one of them is played over the other.
+        async with self._lock(chat_id):
+            for _ in range(MAX_AUTOSKIP):
+                candidate = await queue_manager.next_track(chat_id)
+                if not candidate:
+                    break
+                try:
+                    await self._play_now(chat_id, candidate)
+                    next_track = candidate
+                    break
+                except Exception as exc:
+                    title = candidate.get("title", "unknown")
+                    skipped.append(title)
+                    logger.warning(
+                        "Auto-advance skipped %r in %s: %s", title, chat_id, exc
+                    )
 
         if skipped:
             for cb in self._on_autoskip_callbacks:
@@ -259,7 +280,8 @@ class StreamManager:
         )
 
     # ── playback controls ───────────────────────────────────────────────
-    async def play(self, chat_id: int, track: dict[str, Any], *, seek: int = 0) -> None:
+    async def _play_now(self, chat_id: int, track: dict[str, Any], *, seek: int = 0) -> None:
+        """Start a track. Caller must already hold this chat's lock."""
         from bot.services.database import database
 
         speed = await database.get_chat_value(chat_id, "speed", 1.0)
@@ -274,6 +296,10 @@ class StreamManager:
         self._muted[chat_id] = False
         self._started_at[chat_id] = time.time()
         self._offset[chat_id] = seek
+
+    async def play(self, chat_id: int, track: dict[str, Any], *, seek: int = 0) -> None:
+        async with self._lock(chat_id):
+            await self._play_now(chat_id, track, seek=seek)
 
     async def pause(self, chat_id: int) -> None:
         await self.calls.pause(chat_id)
@@ -292,7 +318,8 @@ class StreamManager:
         await self.calls.unmute(chat_id)
         self._muted[chat_id] = False
 
-    async def stop(self, chat_id: int) -> None:
+    async def _stop_now(self, chat_id: int) -> None:
+        """Leave the call. Caller must already hold this chat's lock."""
         try:
             await self.calls.leave_call(chat_id)
         except Exception as exc:
@@ -304,28 +331,39 @@ class StreamManager:
         self._started_at.pop(chat_id, None)
         await queue_manager.set_current(chat_id, None)
 
+    async def stop(self, chat_id: int) -> None:
+        async with self._lock(chat_id):
+            await self._stop_now(chat_id)
+
     async def skip(self, chat_id: int, to: int = 0) -> dict[str, Any] | None:
-        """Advance to the next track, or to queue position ``to`` (1-based)."""
-        if to > 1:
-            await queue_manager.drop_before(chat_id, to - 1)
-        next_track = await queue_manager.skip(chat_id)
-        if next_track:
-            await self.play(chat_id, next_track)
-        else:
-            await self.stop(chat_id)
-        return next_track
+        """Advance to the next track, or to queue position ``to`` (1-based).
+
+        Held under the chat lock for its whole length: popping the queue and
+        starting the result have to be one step, or two simultaneous skips
+        each take a different track and the loser's track is silently lost.
+        """
+        async with self._lock(chat_id):
+            if to > 1:
+                await queue_manager.drop_before(chat_id, to - 1)
+            next_track = await queue_manager.skip(chat_id)
+            if next_track:
+                await self._play_now(chat_id, next_track)
+            else:
+                await self._stop_now(chat_id)
+            return next_track
 
     async def seek(self, chat_id: int, seconds: int) -> int | None:
         """Seek to an absolute position; returns the new position."""
-        current = await queue_manager.get_current(chat_id)
-        if not current or current.get("is_live"):
-            return None
-        duration = current.get("duration") or 0
-        position = max(0, seconds)
-        if duration:
-            position = min(position, max(0, int(duration) - 5))
-        await self.play(chat_id, current, seek=position)
-        return position
+        async with self._lock(chat_id):
+            current = await queue_manager.get_current(chat_id)
+            if not current or current.get("is_live"):
+                return None
+            duration = current.get("duration") or 0
+            position = max(0, seconds)
+            if duration:
+                position = min(position, max(0, int(duration) - 5))
+            await self._play_now(chat_id, current, seek=position)
+            return position
 
     async def seek_relative(self, chat_id: int, delta: int) -> int | None:
         return await self.seek(chat_id, self.elapsed(chat_id) + delta)
@@ -333,13 +371,14 @@ class StreamManager:
     async def change_volume(self, chat_id: int, volume: int) -> int:
         vol = await queue_manager.set_volume(chat_id, volume)
         if self.is_playing(chat_id):
-            try:
-                # Native volume change avoids restarting the stream when possible.
-                await self.calls.change_volume_call(chat_id, vol)
-            except Exception:
-                current = await queue_manager.get_current(chat_id)
-                if current:
-                    await self.play(chat_id, current, seek=self.elapsed(chat_id))
+            async with self._lock(chat_id):
+                try:
+                    # Native volume change avoids restarting the stream when possible.
+                    await self.calls.change_volume_call(chat_id, vol)
+                except Exception:
+                    current = await queue_manager.get_current(chat_id)
+                    if current:
+                        await self._play_now(chat_id, current, seek=self.elapsed(chat_id))
         return vol
 
     # ── state ───────────────────────────────────────────────────────────
